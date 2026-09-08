@@ -16,6 +16,7 @@ from api.bootstrap import (
     EVENT_ADMIN_MUTATION,
     EmailService,
     RootAccountImmutableError,
+    available_regions,
     publish_alert,
     require_scope,
     settings,
@@ -73,6 +74,16 @@ class ConfirmEnrollRequest(BaseModel):
 
 class SessionRevokeRequest(BaseModel):
     session_id: str
+
+
+@router.get("/api/admin/regions")
+async def list_regions(principal: AdminPrincipal = Depends(require_scope("admins", "read"))):
+    """Available region codes for the invite form's select box — single
+    source of truth is src/models/region.py, tied to the same market-country
+    taxonomy already used for order pricing/region_audit."""
+    if available_regions is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    return {"data": available_regions()}
 
 
 @router.post("/api/admin/admins")

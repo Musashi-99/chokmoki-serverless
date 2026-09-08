@@ -78,9 +78,38 @@ def _format_order_alert(payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# action -> readable verb, for the admin-management events fired directly
+# by api/routes/admin_users.py (publish_alert with a specific `action` and
+# metadata, not the generic per-path one AdminAuditMiddleware fires for
+# every mutating /api/admin/* route). Lets "which admin did what" show up
+# as an actual sentence instead of a raw method+path.
+ADMIN_MGMT_ACTION_VERBS: Dict[str, str] = {
+    "invite_admin": "invited",
+    "deactivate_admin": "deactivated",
+    "reactivate_admin": "reactivated",
+    "regenerate_totp": "regenerated the QR/TOTP for",
+    "revoke_session": "revoked a session for",
+    "revoke_all_sessions": "revoked all sessions for",
+}
+
+
 def _format_settings_alert(payload: Dict[str, Any]) -> str:
     actor = payload.get("actor_email", "unknown admin")
     resource = payload.get("resource", "unknown")
+    action = payload.get("action")
+
+    if resource == "admins" and action in ADMIN_MGMT_ACTION_VERBS:
+        verb = ADMIN_MGMT_ACTION_VERBS[action]
+        target = payload.get("invited_email") or payload.get("target_email") or "an admin"
+        lines = ["👤 *Admin Management*", f"{actor} {verb} `{target}`"]
+        region = payload.get("region")
+        if region:
+            lines.append(f"Region: {region}")
+        count = payload.get("count")
+        if count is not None:
+            lines.append(f"Sessions revoked: {count}")
+        return "\n".join(lines)
+
     method = payload.get("method", "")
     path = payload.get("path", "")
     return f"⚙️ *Setting Updated*\n{actor} updated `{resource}`\n{method} {path}"

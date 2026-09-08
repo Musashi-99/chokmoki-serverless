@@ -21,6 +21,7 @@ from src.config import settings
 from src.database.connection import db
 from src.database.redis_connection import redis_client
 from src.models.admin_rbac import AdminRole
+from src.models.region import is_valid_region, normalize_region_code
 from src.security.login_lockout import LoginLockoutService
 from src.security.secret_encryption import decrypt_totp_secret, encrypt_totp_secret
 
@@ -137,6 +138,12 @@ class AdminUserService:
         email = (email or "").strip().lower()
         if not email:
             raise AdminUserError("Email is required")
+
+        region = normalize_region_code(region)
+        if not is_valid_region(region):
+            raise AdminUserError(f"Unknown region: {region}")
+        if role == AdminRole.REGIONAL_ADMIN.value and not region:
+            raise AdminUserError("A region is required for the Regional Admin role")
 
         database = await db.get_database()
         collection = database[COLLECTION_NAME]

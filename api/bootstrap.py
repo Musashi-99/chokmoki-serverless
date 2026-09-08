@@ -39,6 +39,8 @@ try:
     )
     from src.models.admin_user import AdminUserCreate, AdminUserPublic
     from src.models.admin_rbac import AdminPermission
+    from src.models.region import available_regions
+    from src.models.admin_auth import AdminPrincipal
     from src.services.email_service import EmailService
     from src.alerts.events import EVENT_ADMIN_MUTATION, publish_alert
     from src.services.product_service import ProductService
@@ -144,6 +146,8 @@ except Exception as e:
     AdminUserCreate = None
     AdminUserPublic = None
     AdminPermission = None
+    available_regions = None
+    AdminPrincipal = None
     EmailService = None
     EVENT_ADMIN_MUTATION = None
     publish_alert = None
