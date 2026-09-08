@@ -52,7 +52,7 @@ def main():
             "name": "Regional Admin",
             "role": "regional_admin",
             "scopes": ["orders:read", "inbox:read"],
-            "region": "IN-MH",
+            "regions": ["IN"],
         },
         headers=csrf_header(root),
         timeout=TIMEOUT,
@@ -66,7 +66,7 @@ def main():
     anon = requests.Session()
     r = anon.post(
         f"{BASE}/admins",
-        json={"email": "x@x.com", "name": "x", "role": "admin", "scopes": [], "region": None},
+        json={"email": "x@x.com", "name": "x", "role": "admin", "scopes": [], "regions": []},
         timeout=TIMEOUT,
     )
     check(f"unauthenticated invite is rejected (status={r.status_code})", r.status_code == 401)
@@ -102,7 +102,7 @@ def main():
     rbody = r.json()
     check("regional admin scopes match invited scopes", set(rbody["scopes"]) == {"orders:read", "inbox:read"})
     check("regional admin is_root is false", rbody["is_root"] is False)
-    check("regional admin region carried through", rbody["region"] == "IN-MH")
+    check("regional admin regions carried through", rbody["regions"] == ["IN"])
 
     # 6. ABAC in action against REAL routes: regional admin (orders:read +
     #    inbox:read only) must be denied products:read but allowed

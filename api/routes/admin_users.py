@@ -65,7 +65,7 @@ class InviteAdminRequest(BaseModel):
     name: str
     role: str
     scopes: List[str] = []
-    region: Optional[str] = None
+    regions: List[str] = []
 
 
 class ConfirmEnrollRequest(BaseModel):
@@ -74,6 +74,10 @@ class ConfirmEnrollRequest(BaseModel):
 
 class SessionRevokeRequest(BaseModel):
     session_id: str
+
+
+class SetRegionsRequest(BaseModel):
+    regions: List[str] = []
 
 
 @router.get("/api/admin/regions")
@@ -98,14 +102,14 @@ async def invite_admin(
             name=payload.name,
             role=payload.role,
             scopes=payload.scopes,
-            region=payload.region,
+            regions=payload.regions,
             created_by=principal.email,
         )
     except AdminUserError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     await _send_enrollment_email(payload.email, payload.name, token)
-    await _notify(principal.email, "invite_admin", {"invited_email": payload.email, "region": payload.region})
+    await _notify(principal.email, "invite_admin", {"invited_email": payload.email, "regions": payload.regions})
     return AdminUserPublic.from_doc(doc)
 
 
@@ -177,6 +181,26 @@ async def regenerate_admin_qr(admin_id: str, principal: AdminPrincipal = Depends
     await _send_enrollment_email(doc["email"], doc.get("name", ""), token)
     await _notify(principal.email, "regenerate_totp", {"target_email": doc["email"]})
     return {"success": True}
+
+
+@router.put("/api/admin/admins/{admin_id}/regions")
+async def set_admin_regions(
+    admin_id: str,
+    payload: SetRegionsRequest,
+    principal: AdminPrincipal = Depends(require_scope("admins", "write")),
+):
+    """Root-only region reassignment — e.g. expanding a regional admin to
+    cover an additional market as the business grows."""
+    service = _service()
+    try:
+        doc = await service.set_regions(admin_id, payload.regions)
+    except RootAccountImmutableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except AdminUserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await _notify(principal.email, "set_regions", {"target_email": doc["email"], "regions": doc["regions"]})
+    return AdminUserPublic.from_doc(doc)
 
 
 @router.post("/api/admin/admins/{admin_id}/deactivate")

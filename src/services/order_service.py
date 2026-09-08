@@ -862,14 +862,20 @@ class OrderService:
         to_date: Optional[str] = None,
         coupon: Optional[str] = None,
         country: Optional[str] = None,
+        countries: Optional[List[str]] = None,
         sort_order: int = -1,
     ) -> List[Order]:
-        """List orders with optional filtering, search, and date range"""
+        """List orders with optional filtering, search, and date range.
+
+        `countries`, when given, takes precedence over `country` and builds
+        an $in filter — used by admin_orders.py to scope a region-restricted
+        admin to their assigned set of regions (see
+        api/routes/admin_orders.py's _region_filter)."""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
 
         query = self._build_order_query(
-            user_email, status, search, from_date, to_date, coupon, country
+            user_email, status, search, from_date, to_date, coupon, country, countries
         )
         cursor = collection.find(query).sort("created_at", sort_order).skip(skip).limit(limit)
         orders_dict = await cursor.to_list(length=limit)
@@ -961,13 +967,15 @@ class OrderService:
         to_date: Optional[str] = None,
         coupon: Optional[str] = None,
         country: Optional[str] = None,
+        countries: Optional[List[str]] = None,
     ) -> int:
-        """Count orders matching the given filters"""
+        """Count orders matching the given filters. See list()'s docstring
+        for `countries`."""
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
 
         query = self._build_order_query(
-            user_email, status, search, from_date, to_date, coupon, country
+            user_email, status, search, from_date, to_date, coupon, country, countries
         )
         return await collection.count_documents(query)
 
@@ -994,6 +1002,7 @@ class OrderService:
         to_date: Optional[str] = None,
         coupon: Optional[str] = None,
         country: Optional[str] = None,
+        countries: Optional[List[str]] = None,
     ) -> dict:
         query: dict = {}
         if user_email is not None:
@@ -1017,7 +1026,17 @@ class OrderService:
             query["status.type"] = status
         if coupon:
             query["applied_discount.code"] = coupon.upper()
-        if country:
+        if countries:
+            # Region-scoped admin restriction ($in over their assigned
+            # regions) — takes precedence over the single `country` filter.
+            normalized = [
+                c.strip().upper() if c.strip().lower() != "default" else "default"
+                for c in countries
+                if c and c.strip()
+            ]
+            if normalized:
+                query["region_audit.pricing_country_used"] = {"$in": normalized}
+        elif country:
             # The region actually used to price the order — not the raw
             # selected/GeoIP fields, which can legitimately disagree with it
             # (that disagreement is its own signal, see country_mismatch).

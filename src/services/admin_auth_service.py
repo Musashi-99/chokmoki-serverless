@@ -46,15 +46,19 @@ class AdminAuthService:
         session_id: str,
         jti: str,
         *,
-        scopes: Optional[list[str]] = None,
-        region: Optional[str] = None,
+        scopes: list[str],
+        regions: Optional[list[str]] = None,
         is_root: bool = False,
     ) -> str:
-        # scopes/region/is_root are embedded directly in the token (rather
+        # scopes/regions/is_root are embedded directly in the token (rather
         # than re-resolved from Mongo on every request) — short-lived
         # access tokens already carry `role` this way, and a Mongo round
         # trip per request would be wasted work for attributes that don't
-        # change within a token's lifetime.
+        # change within a token's lifetime. `scopes` is REQUIRED (no
+        # wildcard default) — every caller must pass the principal's actual
+        # scopes explicitly, so a caller that forgets to resolve them can't
+        # silently mint a full-access token (this bit a refresh() call
+        # before scopes/regions were threaded through it).
         expire = datetime.utcnow() + timedelta(minutes=settings.jwt_access_ttl_minutes)
         payload = {
             "sub": email,
@@ -63,8 +67,8 @@ class AdminAuthService:
             "role": role,
             "sid": session_id,
             "jti": jti,
-            "scopes": list(scopes) if scopes is not None else ["*"],
-            "region": region,
+            "scopes": list(scopes),
+            "regions": list(regions) if regions else [],
             "is_root": is_root,
         }
         return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
@@ -96,7 +100,9 @@ class AdminAuthService:
 
         # Tokens minted before this field existed have no "scopes" claim —
         # treat them as full-access (matches pre-multi-admin behavior: the
-        # single hardcoded admin was always SUPER_ADMIN/"*").
+        # single hardcoded admin was always SUPER_ADMIN/"*"). Access tokens
+        # are short-lived (settings.jwt_access_ttl_minutes), so this only
+        # matters for a brief window right after a deploy.
         scopes = payload.get("scopes")
         return AdminPrincipal(
             email=email,
@@ -104,7 +110,7 @@ class AdminAuthService:
             session_id=session_id,
             jti=jti,
             scopes=frozenset(scopes) if scopes is not None else frozenset({"*"}),
-            region=payload.get("region"),
+            regions=frozenset(payload.get("regions") or []),
             is_root=bool(payload.get("is_root", False)),
         )
 
@@ -173,7 +179,7 @@ class AdminAuthService:
         )
         jti = str(uuid.uuid4())
         access_token = self._create_access_token(
-            expected_email, role, session_id, jti, scopes=["*"], region=None, is_root=True
+            expected_email, role, session_id, jti, scopes=["*"], regions=[], is_root=True
         )
         tokens = self.sessions.build_auth_tokens(
             access_token=access_token,
@@ -187,7 +193,7 @@ class AdminAuthService:
             role=role,
             tokens=tokens,
             scopes=frozenset({"*"}),
-            region=None,
+            regions=frozenset(),
             is_root=True,
         )
 
@@ -227,13 +233,13 @@ class AdminAuthService:
 
         role = doc["role"]
         scopes = list(doc.get("scopes") or [])
-        region = doc.get("region")
+        regions = list(doc.get("regions") or [])
         session_id, refresh_token, csrf_token = await self.sessions.create_session(
             doc["email"], role
         )
         jti = str(uuid.uuid4())
         access_token = self._create_access_token(
-            doc["email"], role, session_id, jti, scopes=scopes, region=region, is_root=False
+            doc["email"], role, session_id, jti, scopes=scopes, regions=regions, is_root=False
         )
         tokens = self.sessions.build_auth_tokens(
             access_token=access_token,
@@ -248,7 +254,7 @@ class AdminAuthService:
             role=role,
             tokens=tokens,
             scopes=frozenset(scopes),
-            region=region,
+            regions=frozenset(regions),
             is_root=False,
         )
 
@@ -258,8 +264,37 @@ class AdminAuthService:
             return None
 
         session_id, email, role, new_refresh = rotated
+
+        # Re-resolve identity fresh rather than re-embedding whatever was on
+        # the expiring access token — scopes/regions are the actual
+        # authorization source of truth (Mongo, or env for root), so a
+        # refresh must reflect the current, not the stale, permission set.
+        # Previously this call site called _create_access_token() with no
+        # scopes at all, which defaulted to a wildcard "*" — quietly
+        # re-granting every admin full access on every token refresh
+        # regardless of their assigned scopes.
+        expected_root = (settings.admin_email or "").strip().lower()
+        if email.strip().lower() == expected_root:
+            scopes: list[str] = ["*"]
+            regions: list[str] = []
+            is_root = True
+        else:
+            doc = await self.admin_users.get_by_email(email)
+            if not doc or doc.get("status") != "active":
+                # Deactivated/removed since the last access token was
+                # issued — deactivation already force-revokes sessions
+                # (api/routes/admin_users.py), so this is a defense-in-depth
+                # backstop, not the primary enforcement path.
+                await self.sessions.revoke_session(session_id)
+                return None
+            scopes = list(doc.get("scopes") or [])
+            regions = list(doc.get("regions") or [])
+            is_root = False
+
         jti = str(uuid.uuid4())
-        access_token = self._create_access_token(email, role, session_id, jti)
+        access_token = self._create_access_token(
+            email, role, session_id, jti, scopes=scopes, regions=regions, is_root=is_root
+        )
         csrf_token = secrets.token_urlsafe(32)
         return self.sessions.build_auth_tokens(
             access_token=access_token,

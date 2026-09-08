@@ -110,7 +110,7 @@ def build_inquiry(principal: AdminPrincipal, resource: str, action: str) -> vakt
             "email": principal.email,
             "role": principal.role,
             "scopes": list(scopes),
-            "region": getattr(principal, "region", None),
+            "regions": list(getattr(principal, "regions", None) or []),
             "is_root": bool(getattr(principal, "is_root", False)),
         },
     )

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import FrozenSet, Optional
+from typing import FrozenSet
 
 
 @dataclass(frozen=True)
@@ -9,7 +9,10 @@ class AdminPrincipal:
     session_id: str
     jti: str
     scopes: FrozenSet[str] = field(default_factory=frozenset)
-    region: Optional[str] = None
+    # An admin may be assigned more than one region (e.g. one regional admin
+    # covering both IN and AU) — see src/models/region.py. Empty = global,
+    # never restricted by region (root always has this empty).
+    regions: FrozenSet[str] = field(default_factory=frozenset)
     is_root: bool = False
 
     def has_permission(self, permission: str) -> bool:
@@ -38,5 +41,5 @@ class LoginResult:
     tokens: AuthTokens
     mfa_required: bool = False
     scopes: FrozenSet[str] = field(default_factory=frozenset)
-    region: Optional[str] = None
+    regions: FrozenSet[str] = field(default_factory=frozenset)
     is_root: bool = False

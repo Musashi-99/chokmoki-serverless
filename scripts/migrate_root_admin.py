@@ -58,7 +58,7 @@ async def run(apply: bool) -> None:
         "name": "Root Admin",
         "role": AdminRole.SUPER_ADMIN.value,
         "scopes": ["*"],
-        "region": None,
+        "regions": [],
         "status": "active",
         "is_root": True,
         "password_hash": password_hash,
@@ -75,7 +75,7 @@ async def run(apply: bool) -> None:
     if apply:
         await collection.create_index("email", unique=True)
         await collection.create_index("status")
-        await collection.create_index("region")
+        await collection.create_index("regions")
         await collection.insert_one(doc)
         print("Done.")
     else:

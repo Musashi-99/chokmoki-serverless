@@ -13,7 +13,7 @@ def _principal(**overrides) -> AdminPrincipal:
         session_id="sid",
         jti="jti",
         scopes=frozenset(),
-        region=None,
+        regions=frozenset(),
         is_root=False,
     )
     defaults.update(overrides)
@@ -65,7 +65,7 @@ def test_region_never_gates_access():
     """Region must never appear in any Vakt rule — a regional admin with
     the right scope is allowed regardless of region value, and a missing
     region never blocks an otherwise-permitted action."""
-    principal_a = _principal(scopes=frozenset({"orders:read"}), region="IN-MH")
-    principal_b = _principal(scopes=frozenset({"orders:read"}), region=None)
+    principal_a = _principal(scopes=frozenset({"orders:read"}), regions=frozenset({"IN"}))
+    principal_b = _principal(scopes=frozenset({"orders:read"}), regions=frozenset())
     assert is_allowed(principal_a, "orders", "read") is True
     assert is_allowed(principal_b, "orders", "read") is True

@@ -11,7 +11,9 @@ class AdminUserCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     role: str
     scopes: List[str] = Field(default_factory=list)
-    region: Optional[str] = None
+    # An admin can be assigned more than one region (e.g. one regional admin
+    # covering both IN and AU) — see src/models/region.py.
+    regions: List[str] = Field(default_factory=list)
 
 
 class AdminUserDoc(BaseModel):
@@ -22,7 +24,7 @@ class AdminUserDoc(BaseModel):
     name: str
     role: str
     scopes: List[str] = Field(default_factory=list)
-    region: Optional[str] = None
+    regions: List[str] = Field(default_factory=list)
     status: str  # "invited" | "active" | "deactivated"
     is_root: bool = False
     password_hash: Optional[str] = None
@@ -46,7 +48,7 @@ class AdminUserPublic(BaseModel):
     name: str
     role: str
     scopes: List[str]
-    region: Optional[str] = None
+    regions: List[str] = Field(default_factory=list)
     status: str
     is_root: bool
     totp_enrolled: bool
@@ -64,7 +66,7 @@ class AdminUserPublic(BaseModel):
             name=doc["name"],
             role=doc["role"],
             scopes=doc.get("scopes") or [],
-            region=doc.get("region"),
+            regions=doc.get("regions") or [],
             status=doc["status"],
             is_root=bool(doc.get("is_root", False)),
             totp_enrolled=bool(doc.get("totp_enrolled_at")),

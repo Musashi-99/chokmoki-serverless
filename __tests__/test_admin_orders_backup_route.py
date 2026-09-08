@@ -73,7 +73,7 @@ class TestAdminOrdersExportRoute:
             session_id="test-session",
             jti="test-jti",
             scopes=frozenset({"*"}),
-            region=None,
+            regions=frozenset(),
             is_root=True,
         )
         api_module.app.dependency_overrides[resolve_admin_principal] = lambda: fake_principal

@@ -10,7 +10,7 @@ label is optional (falls back to the bare code) via REGION_LABELS below.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from src.config import settings
 
@@ -60,3 +60,21 @@ def is_valid_region(code: Optional[str]) -> bool:
     if normalized is None:
         return True
     return normalized in {r["code"] for r in available_regions()}
+
+
+def normalize_region_codes(codes: Optional[List[str]]) -> List[str]:
+    """A cleaned, de-duplicated, order-preserving list of region codes — the
+    plural counterpart to normalize_region_code(), for an admin who may be
+    assigned more than one region (e.g. one admin covering both IN and AU)."""
+    if not codes:
+        return []
+    seen: list[str] = []
+    for code in codes:
+        normalized = normalize_region_code(code)
+        if normalized and normalized not in seen:
+            seen.append(normalized)
+    return seen
+
+
+def is_valid_region_list(codes: Optional[List[str]]) -> bool:
+    return all(is_valid_region(c) for c in normalize_region_codes(codes)) if codes else True

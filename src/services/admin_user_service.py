@@ -21,7 +21,7 @@ from src.config import settings
 from src.database.connection import db
 from src.database.redis_connection import redis_client
 from src.models.admin_rbac import AdminRole
-from src.models.region import is_valid_region, normalize_region_code
+from src.models.region import is_valid_region, normalize_region_codes
 from src.security.login_lockout import LoginLockoutService
 from src.security.secret_encryption import decrypt_totp_secret, encrypt_totp_secret
 
@@ -67,7 +67,7 @@ class AdminUserService:
         collection = database[COLLECTION_NAME]
         await collection.create_index("email", unique=True)
         await collection.create_index("status")
-        await collection.create_index("region")
+        await collection.create_index("regions")
 
     # ---- reads --------------------------------------------------------
 
@@ -100,9 +100,11 @@ class AdminUserService:
             return cached[1].get("telegram_chat_id") if cached[1] else None
 
         database = await db.get_database()
+        # Equality against an array field matches "region is one of the
+        # elements" — no $in/$elemMatch needed for a scalar comparison.
         doc = await database[COLLECTION_NAME].find_one(
             {
-                "region": region,
+                "regions": region,
                 "role": AdminRole.REGIONAL_ADMIN.value,
                 "telegram_chat_id": {"$nin": [None, ""]},
                 "status": "active",
@@ -132,18 +134,19 @@ class AdminUserService:
         name: str,
         role: str,
         scopes: list[str],
-        region: Optional[str],
+        regions: Optional[list[str]],
         created_by: str,
     ) -> tuple[dict, str]:
         email = (email or "").strip().lower()
         if not email:
             raise AdminUserError("Email is required")
 
-        region = normalize_region_code(region)
-        if not is_valid_region(region):
-            raise AdminUserError(f"Unknown region: {region}")
-        if role == AdminRole.REGIONAL_ADMIN.value and not region:
-            raise AdminUserError("A region is required for the Regional Admin role")
+        regions = normalize_region_codes(regions)
+        for code in regions:
+            if not is_valid_region(code):
+                raise AdminUserError(f"Unknown region: {code}")
+        if role == AdminRole.REGIONAL_ADMIN.value and not regions:
+            raise AdminUserError("At least one region is required for the Regional Admin role")
 
         database = await db.get_database()
         collection = database[COLLECTION_NAME]
@@ -157,7 +160,7 @@ class AdminUserService:
             "name": name,
             "role": role,
             "scopes": scopes,
-            "region": region,
+            "regions": regions,
             "status": "invited",
             "is_root": False,
             "password_hash": None,
@@ -292,6 +295,32 @@ class AdminUserService:
             {"_id": doc["_id"]}, {"$set": {"status": new_status, "updated_at": now}}
         )
         doc["status"] = new_status
+        return doc
+
+    async def set_regions(self, admin_id: str, regions: Optional[list[str]]) -> dict:
+        """Root-only region (re)assignment — used by
+        scripts/set_admin_regions.py and available for a future admin-panel
+        "edit regions" action. Root's own regions can't be set (always
+        global/unrestricted)."""
+        doc = await self.get_by_id(admin_id)
+        if not doc:
+            raise AdminUserError("Admin not found")
+        if doc.get("is_root"):
+            raise RootAccountImmutableError()
+
+        normalized = normalize_region_codes(regions)
+        for code in normalized:
+            if not is_valid_region(code):
+                raise AdminUserError(f"Unknown region: {code}")
+        if doc.get("role") == AdminRole.REGIONAL_ADMIN.value and not normalized:
+            raise AdminUserError("At least one region is required for the Regional Admin role")
+
+        database = await db.get_database()
+        now = datetime.utcnow()
+        await database[COLLECTION_NAME].update_one(
+            {"_id": doc["_id"]}, {"$set": {"regions": normalized, "updated_at": now}}
+        )
+        doc["regions"] = normalized
         return doc
 
     async def touch_last_login(self, email: str) -> None:

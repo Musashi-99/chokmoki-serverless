@@ -68,7 +68,7 @@ async def admin_login(payload: AdminLoginRequest, request: Request):
         "expires_in": result.tokens.expires_in,
         "mfa_enabled": settings.admin_mfa_enabled if settings else False,
         "scopes": sorted(result.scopes) if result.scopes else [],
-        "region": result.region,
+        "regions": sorted(result.regions) if result.regions else [],
         "is_root": result.is_root,
     }
     if settings and settings.admin_legacy_bearer_enabled:
@@ -143,6 +143,6 @@ async def admin_me(request: Request, email: str = Depends(require_admin)):
         "role": principal.role if principal else (AdminRole.SUPER_ADMIN.value if AdminRole else "super_admin"),
         "mfa_enabled": settings.admin_mfa_enabled if settings else False,
         "scopes": sorted(principal.scopes) if principal and principal.scopes else [],
-        "region": principal.region if principal else None,
+        "regions": sorted(principal.regions) if principal and principal.regions else [],
         "is_root": bool(principal.is_root) if principal else False,
     }

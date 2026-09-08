@@ -90,6 +90,7 @@ ADMIN_MGMT_ACTION_VERBS: Dict[str, str] = {
     "regenerate_totp": "regenerated the QR/TOTP for",
     "revoke_session": "revoked a session for",
     "revoke_all_sessions": "revoked all sessions for",
+    "set_regions": "updated the regions for",
 }
 
 
@@ -102,9 +103,9 @@ def _format_settings_alert(payload: Dict[str, Any]) -> str:
         verb = ADMIN_MGMT_ACTION_VERBS[action]
         target = payload.get("invited_email") or payload.get("target_email") or "an admin"
         lines = ["👤 *Admin Management*", f"{actor} {verb} `{target}`"]
-        region = payload.get("region")
-        if region:
-            lines.append(f"Region: {region}")
+        regions = payload.get("regions")
+        if regions:
+            lines.append(f"Regions: {', '.join(regions)}")
         count = payload.get("count")
         if count is not None:
             lines.append(f"Sessions revoked: {count}")
@@ -216,12 +217,15 @@ async def _resolve_actor_chat_ids(actor_email: Optional[str]) -> list[str]:
             return []
         if actor.get("telegram_chat_id"):
             return [actor["telegram_chat_id"]]
-        region = actor.get("region")
-        if region:
+        # No personal chat set — fall back to every one of the actor's
+        # assigned regions' designated chat (an admin covering both IN and
+        # AU reaches both regions' oversight chats), deduped.
+        chat_ids: list[str] = []
+        for region in actor.get("regions") or []:
             region_chat_id = await admin_users.get_region_chat_id(region)
-            if region_chat_id:
-                return [region_chat_id]
-        return []
+            if region_chat_id and region_chat_id not in chat_ids:
+                chat_ids.append(region_chat_id)
+        return chat_ids
     except Exception as exc:
         if logger:
             logger.warning(f"Telegram routing lookup failed for {actor_email}: {exc}")

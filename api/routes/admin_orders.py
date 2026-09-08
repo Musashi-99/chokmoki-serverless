@@ -19,7 +19,7 @@ from api.bootstrap import (
     require_scope_email,
 )
 from api.json_utils import JSONEncoder, _json_response_content
-from src.models.region import normalize_region_code
+from src.models.region import normalize_region_code, normalize_region_codes
 from src.services import order_ledger
 from src.shipping.courier_provider import CourierUnavailableError, get_courier_provider, order_country
 from src.utils.money import money
@@ -42,23 +42,27 @@ def _order_region(order: Any) -> str:
 
 
 def _enforce_order_region(principal: AdminPrincipal, order: Any) -> None:
-    """A regional admin (principal.region set, and not root/wildcard-scoped)
-    may only see/act on orders priced in their own region. 404s rather than
-    403s — same "don't reveal existence" posture as a missing order.
-    Root and any admin without a region assigned are unrestricted."""
-    if not principal.region or principal.is_root:
+    """A regional admin (principal.regions non-empty, and not root/
+    wildcard-scoped) may only see/act on orders priced in one of their
+    assigned regions — e.g. an admin covering both IN and AU can see either.
+    404s rather than 403s — same "don't reveal existence" posture as a
+    missing order. Root and any admin with no regions assigned are
+    unrestricted."""
+    if not principal.regions or principal.is_root:
         return
-    if _order_region(order) != normalize_region_code(principal.region):
+    allowed = normalize_region_codes(list(principal.regions))
+    if _order_region(order) not in allowed:
         raise HTTPException(status_code=404, detail="Order not found")
 
 
-def _region_filter(principal: AdminPrincipal) -> Optional[str]:
-    """What to force the `country` filter to for a region-scoped admin's
-    list/stats queries — None means "no forced filter" (root, or an admin
-    with no region assigned)."""
-    if not principal.region or principal.is_root:
+def _region_filter(principal: AdminPrincipal) -> Optional[List[str]]:
+    """What to force the order list/stats query to for a region-scoped
+    admin — None means "no forced filter" (root, or an admin with no
+    regions assigned). Always a list (even a single region), consumed as an
+    $in filter by OrderService.list()/count()."""
+    if not principal.regions or principal.is_root:
         return None
-    return normalize_region_code(principal.region)
+    return normalize_region_codes(list(principal.regions))
 
 
 @router.get("/api/admin/orders")
@@ -78,22 +82,22 @@ async def admin_list_orders(
         raise HTTPException(status_code=500, detail="Server not initialized")
 
     # A region-scoped admin can never widen this via the query param — the
-    # forced value always wins, the client-supplied `country` is ignored.
-    forced_region = _region_filter(principal)
-    if forced_region:
-        country = forced_region
+    # forced $in filter always wins, the client-supplied `country` is ignored.
+    forced_regions = _region_filter(principal)
+    if forced_regions:
+        country = None
 
     service = OrderService()
     orders = await service.list(
         skip=skip, limit=limit,
         status=status, search=search,
         from_date=from_date, to_date=to_date,
-        coupon=coupon, country=country,
+        coupon=coupon, country=country, countries=forced_regions,
     )
     total = await service.count(
         status=status, search=search,
         from_date=from_date, to_date=to_date,
-        coupon=coupon, country=country,
+        coupon=coupon, country=country, countries=forced_regions,
     )
     return JSONResponse(content=json.loads(json.dumps({
         "data": [order.model_dump(by_alias=True) for order in orders],
@@ -325,9 +329,9 @@ async def admin_get_stats(principal: AdminPrincipal = Depends(require_scope("ord
     orders_collection = database["orders"]
     products_collection = database["products"]
     region_match: Dict[str, Any] = {}
-    forced_region = _region_filter(principal)
-    if forced_region:
-        region_match = {"region_audit.pricing_country_used": forced_region}
+    forced_regions = _region_filter(principal)
+    if forced_regions:
+        region_match = {"region_audit.pricing_country_used": {"$in": forced_regions}}
 
     total_orders = await orders_collection.count_documents(dict(region_match))
 
