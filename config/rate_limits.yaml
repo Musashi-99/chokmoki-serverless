@@ -58,23 +58,33 @@ rules:
   # Customer login OTP (phone via MSG91 or email via Brevo — both submit as
   # `identifier`). field: identifier reuses the generic "email" scope
   # mechanism (src/plugins/rate_limit_config.py) which reads any named body
-  # field — no new scope type needed. "5 per hour" per identifier is the
-  # actual abuse cap; the IP bucket is a backstop against one IP cycling
-  # numbers/addresses.
+  # field — no new scope type needed.
+  #
+  # burst was 2/rate 5 per hour — the frontend's own resend cooldown is 30s
+  # (LoginForm.tsx's `resendIn` timer), which implicitly promises "you can
+  # resend every 30s", but burst=2 only allows 2 immediate sends before
+  # falling back to a 12-minute refill cadence (rate 5/hour). A real
+  # customer whose first SMS/email is slow or lost — hitting resend a 3rd
+  # time after ~60-90s, exactly as the UI invites them to — got a 429 and
+  # locked out for up to 12 minutes. Root cause of the "many users get 429"
+  # reports (confirmed against production logs: every recent 429 was on
+  # this exact endpoint). burst=5 covers a realistic string of resends
+  # (~2.5 min of 30s-cooldown clicking) while rate=10/hour still caps
+  # sustained abuse meaningfully below the real abuse threshold.
   - id: otp_request
     match:
       methods: [POST]
       paths: [/api/auth/otp/request]
     buckets:
       - scope: ip
-        rate: 20
+        rate: 40
         window: 1h
-        burst: 5
+        burst: 12
       - scope: email
         field: identifier
-        rate: 5
+        rate: 10
         window: 1h
-        burst: 2
+        burst: 5
 
   # OTP codes are short (4-6 digits) — this is the actual brute-force
   # defense for /api/auth/otp/verify. otp_request throttles how many codes
