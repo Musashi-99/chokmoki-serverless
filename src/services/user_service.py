@@ -46,13 +46,41 @@ def address_identity(line1: str, postal_code: str) -> tuple[str, str]:
     return line, pin
 
 
+def _insert_doc(user: User) -> dict:
+    """Doc to insert for a brand-new user — drops fields left at their
+    `None` default (phone on an email-only signup, email on a phone-only
+    one) instead of writing them out as an explicit `null`.
+
+    This matters because of how the unique indexes below work: `sparse`
+    only excludes documents where the field is completely ABSENT, not
+    documents where the field is present with value `null` — Mongo still
+    indexes an explicit null like any other value. Two phone-less
+    signups both writing `phone: null` collide on that index as
+    duplicates of each other, even though neither has a phone at all.
+    Omitting the key entirely (via exclude_none) is what actually makes a
+    phone-less/email-less doc invisible to its sparse unique index.
+    """
+    return user.model_dump(exclude_none=True)
+
+
 class UserService:
     async def ensure_indexes(self) -> None:
         database = await db.get_database()
-        # sparse: phone-only and email-only accounts coexist without either
-        # unique index rejecting the other's missing field as a duplicate.
-        await database[COLLECTION_NAME].create_index("phone", unique=True, sparse=True)
-        await database[COLLECTION_NAME].create_index("email", unique=True, sparse=True)
+        # partialFilterExpression (not sparse — see _insert_doc's docstring
+        # for why sparse alone doesn't work): only documents where the field
+        # is actually a string participate in the uniqueness constraint, so
+        # any number of phone-only and email-only accounts can coexist
+        # without colliding with each other on the field they don't have.
+        await database[COLLECTION_NAME].create_index(
+            "phone",
+            unique=True,
+            partialFilterExpression={"phone": {"$type": "string"}},
+        )
+        await database[COLLECTION_NAME].create_index(
+            "email",
+            unique=True,
+            partialFilterExpression={"email": {"$type": "string"}},
+        )
 
     async def get_by_id(self, user_id: str) -> Optional[User]:
         database = await db.get_database()
@@ -90,7 +118,7 @@ class UserService:
             return User(**existing)
 
         user = User(phone=phone, last_login_at=now)
-        doc = user.model_dump()
+        doc = _insert_doc(user)
         try:
             await collection.insert_one(doc)
         except Exception:
@@ -118,7 +146,7 @@ class UserService:
             return User(**existing)
 
         user = User(email=email, email_verified=True, phone_verified=False, last_login_at=now)
-        doc = user.model_dump()
+        doc = _insert_doc(user)
         try:
             await collection.insert_one(doc)
         except Exception:
@@ -234,7 +262,7 @@ class UserService:
             )
             database = await db.get_database()
             try:
-                await database[COLLECTION_NAME].insert_one(user.model_dump())
+                await database[COLLECTION_NAME].insert_one(_insert_doc(user))
             except DuplicateKeyError:
                 user = None
                 if phone_n:

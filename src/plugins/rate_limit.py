@@ -60,6 +60,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         method = request.method.upper()
 
+        # Only the rate-limit CHECK itself (below) is wrapped in try/except —
+        # call_next(request), which runs the actual route handler, is
+        # deliberately called OUTSIDE this block (see after it). Previously
+        # call_next was inside the try too, so ANY unhandled exception
+        # anywhere in the real request handling — not just a rate-limiter/
+        # Redis failure — got caught here and relabeled as a generic,
+        # UNLOGGED "Rate limit service unavailable" 503. That silently
+        # masked a real bug (a Mongo unique-index collision on brand-new
+        # customer signups, see src/services/user_service.py's
+        # partialFilterExpression fix) behind a meaningless error with zero
+        # trace in the logs, for as long as it went unnoticed.
         try:
             operation, body_fields = await self._extract_cqrs_context(request, path, method)
             admin_email = _extract_admin_email(request)
@@ -85,8 +96,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     retry_seconds = max(1, int(result.retry_after_ms / 1000))
                     return self._rate_limit_response(retry_seconds)
 
-            return await call_next(request)
-
         except Exception:
             if should_fail_closed_for_path(path):
                 return JSONResponse(
@@ -96,7 +105,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         "message": "Request blocked because rate limiting could not be verified",
                     },
                 )
-            return await call_next(request)
+            # Fail open: the rate-limit check itself is broken, but that
+            # must not block the actual request — fall through to call_next.
+
+        return await call_next(request)
 
     def _log_client_ip(self, request: Request, path: str, resolved_ip: str) -> None:
         """Temporary debug: dump headers + resolved client IP for auth paths.

@@ -160,6 +160,55 @@ class TestRateLimitMiddlewareFailClosed:
         assert response.status_code == 200
 
 
+class TestRateLimitMiddlewareDoesNotMaskDownstreamErrors:
+    """Regression test: previously call_next(request) ran INSIDE the same
+    try/except that catches rate-limit-check failures, so ANY unhandled
+    exception in the real route handler — not just a Redis/rate-limit
+    problem — got relabeled as a generic, unlogged 503 "Rate limit service
+    unavailable". That masked a real bug (a Mongo unique-index collision on
+    brand-new customer signups) for weeks: the customer's OTP had already
+    been consumed by the time the unrelated downstream error fired, so a
+    retry then showed a misleading "Invalid or expired OTP" instead of a
+    traceable error. call_next must run outside the rate-limit try/except
+    so a downstream exception reaches FastAPI's own exception handling
+    instead of being swallowed here."""
+
+    @pytest.mark.asyncio
+    async def test_downstream_exception_propagates_not_masked_as_503(self, monkeypatch):
+        monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
+        monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test")
+        monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
+        monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+        monkeypatch.setenv("RATE_LIMIT_AUTH_FAIL_CLOSED", "true")
+
+        middleware = RateLimitMiddleware(app=AsyncMock())
+        request = _make_request(
+            path="/api/auth/otp/verify",
+            method="POST",
+            headers={"content-type": "application/json"},
+        )
+
+        async def receive():
+            return {
+                "type": "http.request",
+                "body": b'{"identifier":"a@b.com","otp":"123456"}',
+            }
+
+        request._receive = receive
+
+        # The rate-limit check itself succeeds (real Redis, real checks) —
+        # only the actual route handler fails, simulating the real bug
+        # (a DuplicateKeyError raised deep inside otp_verify's account
+        # creation, after the OTP was already validated/consumed).
+        downstream = AsyncMock(side_effect=RuntimeError("simulated downstream account-creation bug"))
+
+        with pytest.raises(RuntimeError, match="simulated downstream account-creation bug"):
+            await middleware.dispatch(request, downstream)
+
+        assert downstream.await_count == 1
+
+
 class TestLoginLockout:
     @pytest.mark.asyncio
     async def test_lockout_after_max_failures(self, monkeypatch):
