@@ -14,6 +14,7 @@ from api.bootstrap import (
     get_client_ip,
     logger,
     require_admin,
+    require_scope_email,
 )
 from api.json_utils import JSONEncoder, _json_response_content
 from src.services import order_ledger
@@ -34,7 +35,7 @@ async def admin_list_orders(
     to_date: Optional[str] = None,
     coupon: Optional[str] = None,
     country: Optional[str] = None,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("orders", "read")),
 ):
     """List all orders for the admin dashboard with optional filtering."""
     if OrderService is None:
@@ -60,7 +61,7 @@ async def admin_list_orders(
 
 @router.post("/api/admin/orders")
 async def admin_create_order(
-    request: Request, payload: Dict[str, Any], email: str = Depends(require_admin)
+    request: Request, payload: Dict[str, Any], email: str = Depends(require_scope_email("orders", "write"))
 ):
     """Create an order from the admin dashboard (phone / manual orders)."""
     if OrderService is None:
@@ -90,7 +91,7 @@ async def admin_create_order(
 
 @router.put("/api/admin/orders/{order_id}/status")
 async def admin_update_order_status(
-    order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    order_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("orders", "write"))
 ):
     """Update an order's status by order_id."""
     if OrderService is None:
@@ -118,7 +119,7 @@ async def admin_update_order_status(
 
 
 @router.get("/api/admin/orders/{order_id}")
-async def admin_get_order(order_id: str, email: str = Depends(require_admin)):
+async def admin_get_order(order_id: str, email: str = Depends(require_scope_email("orders", "read"))):
     """Get a single order by order_id."""
     if OrderService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -135,7 +136,7 @@ async def admin_get_order(order_id: str, email: str = Depends(require_admin)):
 
 
 @router.get("/api/admin/orders/{order_id}/events")
-async def admin_get_order_events(order_id: str, email: str = Depends(require_admin)):
+async def admin_get_order_events(order_id: str, email: str = Depends(require_scope_email("orders", "read"))):
     """Unified per-order timeline — merges creation, payment, status,
     fulfillment, shipment, and note events into one chronological view.
     """
@@ -150,7 +151,7 @@ async def admin_get_order_events(order_id: str, email: str = Depends(require_adm
 async def admin_order_invoice_pdf(
     order_id: str,
     doc_type: str = "tax_invoice",
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("orders", "read")),
 ):
     """Branded GST document PDF, generated lazily on request — tax_invoice
     (default), receipt, or bill_of_supply. The invoice number is assigned
@@ -196,7 +197,7 @@ async def admin_order_invoice_pdf(
 
 @router.post("/api/admin/orders/{order_id}/notes")
 async def admin_add_order_note(
-    order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    order_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("orders", "write"))
 ):
     """Append-only admin annotation — no edit/delete, this is a record."""
     if OrderService is None:
@@ -217,7 +218,7 @@ async def admin_add_order_note(
 
 @router.post("/api/admin/orders/{order_id}/custom-status")
 async def admin_set_custom_status(
-    order_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    order_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("orders", "write"))
 ):
     """Admin-only operational tag, orthogonal to status.type — never
     touched by webhooks or system logic.
@@ -236,7 +237,7 @@ async def admin_set_custom_status(
 
 
 @router.post("/api/admin/orders/{order_id}/mark-payment-collected")
-async def admin_mark_payment_collected(order_id: str, email: str = Depends(require_admin)):
+async def admin_mark_payment_collected(order_id: str, email: str = Depends(require_scope_email("orders", "write"))):
     """Explicit admin action confirming COD cash was actually collected —
     payment_status starts 'pending' for every order now, this is the step
     that replaces the old implicit "COD = paid at order time" assumption.
@@ -254,7 +255,7 @@ async def admin_mark_payment_collected(order_id: str, email: str = Depends(requi
 
 
 @router.get("/api/admin/stats")
-async def admin_get_stats(email: str = Depends(require_admin)):
+async def admin_get_stats(email: str = Depends(require_scope_email("orders", "read"))):
     """Dashboard overview stats: order counts, revenue, product count."""
     if OrderService is None or ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -302,7 +303,7 @@ async def admin_get_stats(email: str = Depends(require_admin)):
 # ========== Shiprocket fulfillment (admin-driven) ==========
 
 @router.post("/api/admin/orders/{order_id}/pack")
-async def admin_mark_order_packed(order_id: str, email: str = Depends(require_admin)):
+async def admin_mark_order_packed(order_id: str, email: str = Depends(require_scope_email("orders", "write"))):
     """Mark an order as physically packed — no Shiprocket calls yet."""
     if OrderService is None or db is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -331,7 +332,7 @@ async def _get_order_doc_or_404(order_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/admin/orders/{order_id}/shiprocket/couriers")
-async def admin_get_courier_quotes(order_id: str, email: str = Depends(require_admin)):
+async def admin_get_courier_quotes(order_id: str, email: str = Depends(require_scope_email("orders", "read"))):
     """Live courier quotes for the 'Ready to Ship' picker — no shipment created yet."""
     if OrderService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -355,7 +356,7 @@ async def admin_get_courier_quotes(order_id: str, email: str = Depends(require_a
 
 @router.post("/api/admin/orders/{order_id}/shiprocket/ship")
 async def admin_ship_order(
-    order_id: str, payload: Optional[Dict[str, Any]] = None, email: str = Depends(require_admin)
+    order_id: str, payload: Optional[Dict[str, Any]] = None, email: str = Depends(require_scope_email("orders", "write"))
 ):
     """'Ready to Ship': create the shipment, assign AWB (auto or the given
     courier_company_id), generate label + invoice, schedule pickup.
@@ -390,7 +391,7 @@ async def admin_ship_order(
 
 
 @router.post("/api/admin/orders/{order_id}/shiprocket/cancel")
-async def admin_cancel_shipment(order_id: str, email: str = Depends(require_admin)):
+async def admin_cancel_shipment(order_id: str, email: str = Depends(require_scope_email("orders", "write"))):
     order_doc = await _get_order_doc_or_404(order_id)
     provider = get_courier_provider(order_country(order_doc))
     try:
@@ -410,7 +411,7 @@ async def admin_cancel_shipment(order_id: str, email: str = Depends(require_admi
 
 
 @router.get("/api/admin/orders/{order_id}/shiprocket/track")
-async def admin_track_shipment(order_id: str, email: str = Depends(require_admin)):
+async def admin_track_shipment(order_id: str, email: str = Depends(require_scope_email("orders", "read"))):
     order_doc = await _get_order_doc_or_404(order_id)
     provider = get_courier_provider(order_country(order_doc))
     try:

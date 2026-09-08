@@ -10,6 +10,7 @@ from api.bootstrap import (
     CouponUpdate,
     build_update_payload,
     require_admin,
+    require_scope_email,
     require_update_fields,
 )
 from api.json_utils import JSONEncoder
@@ -22,7 +23,7 @@ def _json(content: Any) -> JSONResponse:
 
 
 @router.get("/api/admin/coupons")
-async def admin_list_coupons(email: str = Depends(require_admin)):
+async def admin_list_coupons(email: str = Depends(require_scope_email("orders", "write"))):
     if CouponService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     data = await CouponService().list()
@@ -31,7 +32,7 @@ async def admin_list_coupons(email: str = Depends(require_admin)):
 
 @router.post("/api/admin/coupons")
 async def admin_create_coupon(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("orders", "write"))
 ):
     if CouponService is None or CouponCreate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -51,7 +52,7 @@ async def admin_create_coupon(
 
 @router.put("/api/admin/coupons/{coupon_id}")
 async def admin_update_coupon(
-    coupon_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    coupon_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("orders", "write"))
 ):
     if CouponService is None or CouponUpdate is None or CouponCreate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -92,7 +93,7 @@ async def admin_update_coupon(
 
 
 @router.delete("/api/admin/coupons/{coupon_id}")
-async def admin_delete_coupon(coupon_id: str, email: str = Depends(require_admin)):
+async def admin_delete_coupon(coupon_id: str, email: str = Depends(require_scope_email("orders", "write"))):
     if CouponService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     try:

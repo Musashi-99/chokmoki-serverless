@@ -4,7 +4,7 @@ import asyncio
 import secrets
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Literal, Optional
 
 from jose import JWTError, jwt
 
@@ -16,12 +16,16 @@ from src.security.login_lockout import LoginLockoutService
 from src.security.password import verify_admin_password
 from src.plugins.logger import logger
 from src.services.admin_session_service import AdminSessionService
+from src.services.admin_user_service import AdminUserService
+
+LoginMode = Literal["password", "passwordless", "unknown"]
 
 
 class AdminAuthService:
     def __init__(self) -> None:
         self.sessions = AdminSessionService()
         self.lockout = LoginLockoutService()
+        self.admin_users = AdminUserService()
 
     def _decode_token(self, token: str) -> Optional[dict]:
         secrets_to_try = [settings.jwt_secret]
@@ -36,8 +40,21 @@ class AdminAuthService:
         return None
 
     def _create_access_token(
-        self, email: str, role: str, session_id: str, jti: str
+        self,
+        email: str,
+        role: str,
+        session_id: str,
+        jti: str,
+        *,
+        scopes: Optional[list[str]] = None,
+        region: Optional[str] = None,
+        is_root: bool = False,
     ) -> str:
+        # scopes/region/is_root are embedded directly in the token (rather
+        # than re-resolved from Mongo on every request) — short-lived
+        # access tokens already carry `role` this way, and a Mongo round
+        # trip per request would be wasted work for attributes that don't
+        # change within a token's lifetime.
         expire = datetime.utcnow() + timedelta(minutes=settings.jwt_access_ttl_minutes)
         payload = {
             "sub": email,
@@ -46,6 +63,9 @@ class AdminAuthService:
             "role": role,
             "sid": session_id,
             "jti": jti,
+            "scopes": list(scopes) if scopes is not None else ["*"],
+            "region": region,
+            "is_root": is_root,
         }
         return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
@@ -74,7 +94,19 @@ class AdminAuthService:
         if not session or session.get("email", "").lower() != email.lower():
             return None
 
-        return AdminPrincipal(email=email, role=role, session_id=session_id, jti=jti)
+        # Tokens minted before this field existed have no "scopes" claim —
+        # treat them as full-access (matches pre-multi-admin behavior: the
+        # single hardcoded admin was always SUPER_ADMIN/"*").
+        scopes = payload.get("scopes")
+        return AdminPrincipal(
+            email=email,
+            role=role,
+            session_id=session_id,
+            jti=jti,
+            scopes=frozenset(scopes) if scopes is not None else frozenset({"*"}),
+            region=payload.get("region"),
+            is_root=bool(payload.get("is_root", False)),
+        )
 
     async def verify_admin_key(self, token: str) -> Optional[AdminPrincipal]:
         """Validate CQRS/REST admin credentials with full session checks."""
@@ -140,7 +172,9 @@ class AdminAuthService:
             expected_email, role
         )
         jti = str(uuid.uuid4())
-        access_token = self._create_access_token(expected_email, role, session_id, jti)
+        access_token = self._create_access_token(
+            expected_email, role, session_id, jti, scopes=["*"], region=None, is_root=True
+        )
         tokens = self.sessions.build_auth_tokens(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -148,7 +182,75 @@ class AdminAuthService:
             session_id=session_id,
         )
         logger.info(f"Admin session created for {expected_email}")
-        return LoginResult(email=expected_email, role=role, tokens=tokens)
+        return LoginResult(
+            email=expected_email,
+            role=role,
+            tokens=tokens,
+            scopes=frozenset({"*"}),
+            region=None,
+            is_root=True,
+        )
+
+    async def resolve_login_mode(self, email: str) -> LoginMode:
+        """Never leaks whether an email exists beyond the generic
+        'unknown' — used by the frontend to decide whether to render a
+        password field at all (src/pages/admin/AdminLogin.tsx)."""
+        normalized = (email or "").strip().lower()
+        expected_root = (settings.admin_email or "").strip().lower()
+        if normalized and expected_root and normalized == expected_root:
+            return "password"
+
+        doc = await self.admin_users.get_by_email(normalized)
+        if doc and doc.get("status") == "active" and not doc.get("is_root"):
+            return "passwordless"
+        return "unknown"
+
+    async def authenticate_passwordless(
+        self,
+        email: str,
+        totp_code: Optional[str],
+        *,
+        client_ip: Optional[str] = None,
+    ) -> Optional[LoginResult]:
+        ip = (client_ip or "unknown").strip() or "unknown"
+        doc = await self.admin_users.get_by_email(email)
+        if not doc or doc.get("is_root") or doc.get("status") != "active":
+            # Still runs a lockout-shaped failure record so an enumeration
+            # attempt against unknown/inactive emails looks identical to a
+            # wrong-code attempt against a real one.
+            await self.lockout.record_failure(ip, email)
+            return None
+
+        ok = await self.admin_users.verify_totp_login(doc["email"], totp_code, client_ip=ip)
+        if not ok:
+            return None
+
+        role = doc["role"]
+        scopes = list(doc.get("scopes") or [])
+        region = doc.get("region")
+        session_id, refresh_token, csrf_token = await self.sessions.create_session(
+            doc["email"], role
+        )
+        jti = str(uuid.uuid4())
+        access_token = self._create_access_token(
+            doc["email"], role, session_id, jti, scopes=scopes, region=region, is_root=False
+        )
+        tokens = self.sessions.build_auth_tokens(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            csrf_token=csrf_token,
+            session_id=session_id,
+        )
+        await self.admin_users.touch_last_login(doc["email"])
+        logger.info(f"Admin session created for {doc['email']} (passwordless)")
+        return LoginResult(
+            email=doc["email"],
+            role=role,
+            tokens=tokens,
+            scopes=frozenset(scopes),
+            region=region,
+            is_root=False,
+        )
 
     async def refresh(self, refresh_token: str) -> Optional[AuthTokens]:
         rotated = await self.sessions.rotate_refresh_token(refresh_token)

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import json
 import httpx
-from api.bootstrap import AccountPageSettingsService, AccountPageSettingsUpdate, BlogPostCreate, BlogPostUpdate, BlogService, CollectionSlideCreate, CollectionSlideService, CollectionSlideUpdate, ContactPageSettingsService, ContactPageSettingsUpdate, FAQItemCreate, FAQItemService, FAQItemUpdate, HeroConfigCreate, HeroConfigService, HeroConfigUpdate, HistoryPageSettingsService, HistoryPageSettingsUpdate, HomePageSettingsService, HomePageSettingsUpdate, JournalPageSettingsUpdate, NavigationSettingsService, NavigationSettingsUpdate, PolicyContentService, PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate, ProductPageSettingsService, ProductPageSettingsUpdate, ShopPageSettingsService, ShopPageSettingsUpdate, SiteAssetCreate, SiteAssetService, SiteAssetUpdate, StoryPageSettingsService, StoryPageSettingsUpdate, StudioSettingsService, StudioSettingsUpdate, TestimonialCreate, TestimonialService, TestimonialUpdate, build_update_payload, cache, require_admin, require_update_fields, settings
+from api.bootstrap import AccountPageSettingsService, AccountPageSettingsUpdate, BlogPostCreate, BlogPostUpdate, BlogService, CollectionSlideCreate, CollectionSlideService, CollectionSlideUpdate, ContactPageSettingsService, ContactPageSettingsUpdate, FAQItemCreate, FAQItemService, FAQItemUpdate, HeroConfigCreate, HeroConfigService, HeroConfigUpdate, HistoryPageSettingsService, HistoryPageSettingsUpdate, HomePageSettingsService, HomePageSettingsUpdate, JournalPageSettingsUpdate, NavigationSettingsService, NavigationSettingsUpdate, PolicyContentService, PolicyPageMetaUpdate, PolicySectionCreate, PolicySectionUpdate, ProductPageSettingsService, ProductPageSettingsUpdate, ShopPageSettingsService, ShopPageSettingsUpdate, SiteAssetCreate, SiteAssetService, SiteAssetUpdate, StoryPageSettingsService, StoryPageSettingsUpdate, StudioSettingsService, StudioSettingsUpdate, TestimonialCreate, TestimonialService, TestimonialUpdate, build_update_payload, cache, require_admin, require_update_fields, settings, require_scope_email
 from api.json_utils import JSONEncoder, _json_response_content
 
 router = APIRouter()
@@ -42,7 +42,7 @@ async def admin_list_testimonials(
 
 @router.post("/api/admin/testimonials")
 async def admin_create_testimonial(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Create a testimonial."""
     if TestimonialService is None or TestimonialCreate is None:
@@ -65,7 +65,7 @@ async def admin_create_testimonial(
 
 @router.put("/api/admin/testimonials/{testimonial_id}")
 async def admin_update_testimonial(
-    testimonial_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    testimonial_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Update a testimonial by its MongoDB id."""
     if TestimonialService is None or TestimonialUpdate is None:
@@ -87,7 +87,7 @@ async def admin_update_testimonial(
 
 
 @router.delete("/api/admin/testimonials/{testimonial_id}")
-async def admin_delete_testimonial(testimonial_id: str, email: str = Depends(require_admin)):
+async def admin_delete_testimonial(testimonial_id: str, email: str = Depends(require_scope_email("content", "write"))):
     """Delete a testimonial by its MongoDB id."""
     if TestimonialService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -123,7 +123,7 @@ async def admin_list_hero_configs(email: str = Depends(require_admin)):
 
 @router.post("/api/admin/hero")
 async def admin_create_hero_config(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Create a hero config."""
     if HeroConfigService is None or HeroConfigCreate is None:
@@ -146,7 +146,7 @@ async def admin_create_hero_config(
 
 @router.put("/api/admin/hero/{config_id}")
 async def admin_update_hero_config(
-    config_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    config_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Update a hero config by its MongoDB id."""
     if HeroConfigService is None or HeroConfigCreate is None or HeroConfigUpdate is None:
@@ -178,7 +178,7 @@ async def admin_update_hero_config(
 
 
 @router.delete("/api/admin/hero/{config_id}")
-async def admin_delete_hero_config(config_id: str, email: str = Depends(require_admin)):
+async def admin_delete_hero_config(config_id: str, email: str = Depends(require_scope_email("content", "write"))):
     """Delete a hero config by its MongoDB id."""
     if HeroConfigService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -209,7 +209,7 @@ async def admin_list_site_assets(email: str = Depends(require_admin)):
 
 @router.post("/api/admin/site-assets")
 async def admin_create_site_asset(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Create a site asset."""
     if SiteAssetService is None or SiteAssetCreate is None:
@@ -233,7 +233,7 @@ async def admin_create_site_asset(
 
 @router.put("/api/admin/site-assets/{asset_id}")
 async def admin_update_site_asset(
-    asset_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    asset_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Update a site asset by its MongoDB id."""
     if SiteAssetService is None or SiteAssetUpdate is None:
@@ -256,7 +256,7 @@ async def admin_update_site_asset(
 
 
 @router.delete("/api/admin/site-assets/{asset_id}")
-async def admin_delete_site_asset(asset_id: str, email: str = Depends(require_admin)):
+async def admin_delete_site_asset(asset_id: str, email: str = Depends(require_scope_email("content", "write"))):
     """Delete a site asset by its MongoDB id."""
     if SiteAssetService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -291,7 +291,7 @@ async def admin_list_faq_items(email: str = Depends(require_admin)):
 
 @router.post("/api/admin/faq")
 async def admin_create_faq_item(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Create a FAQ item."""
     if FAQItemService is None or FAQItemCreate is None:
@@ -314,7 +314,7 @@ async def admin_create_faq_item(
 
 @router.put("/api/admin/faq/{faq_id}")
 async def admin_update_faq_item(
-    faq_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    faq_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Update a FAQ item by its MongoDB id."""
     if FAQItemService is None or FAQItemUpdate is None:
@@ -336,7 +336,7 @@ async def admin_update_faq_item(
 
 
 @router.delete("/api/admin/faq/{faq_id}")
-async def admin_delete_faq_item(faq_id: str, email: str = Depends(require_admin)):
+async def admin_delete_faq_item(faq_id: str, email: str = Depends(require_scope_email("content", "write"))):
     """Delete a FAQ item by its MongoDB id."""
     if FAQItemService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -370,7 +370,7 @@ async def admin_list_collection_slides(email: str = Depends(require_admin)):
 
 @router.post("/api/admin/collection-slides")
 async def admin_create_collection_slide(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Create a collection slide."""
     if CollectionSlideService is None or CollectionSlideCreate is None:
@@ -392,7 +392,7 @@ async def admin_create_collection_slide(
 
 @router.put("/api/admin/collection-slides/{slide_id}")
 async def admin_update_collection_slide(
-    slide_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    slide_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     """Update a collection slide by its MongoDB id."""
     if CollectionSlideService is None or CollectionSlideUpdate is None:
@@ -413,7 +413,7 @@ async def admin_update_collection_slide(
 
 
 @router.delete("/api/admin/collection-slides/{slide_id}")
-async def admin_delete_collection_slide(slide_id: str, email: str = Depends(require_admin)):
+async def admin_delete_collection_slide(slide_id: str, email: str = Depends(require_scope_email("content", "write"))):
     """Delete a collection slide by its MongoDB id."""
     if CollectionSlideService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -439,7 +439,7 @@ async def admin_get_studio_settings(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/studio-settings")
 async def admin_upsert_studio_settings(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if StudioSettingsService is None or StudioSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -468,7 +468,7 @@ async def admin_get_shop_page(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/shop-page")
 async def admin_upsert_shop_page(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if ShopPageSettingsService is None or ShopPageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -495,7 +495,7 @@ async def admin_get_policies(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/policies/meta")
 async def admin_upsert_policy_meta(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if PolicyContentService is None or PolicyPageMetaUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -520,7 +520,7 @@ async def admin_get_policy_meta(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/policies/sections/{slug}")
 async def admin_upsert_policy_section(
-    slug: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    slug: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if PolicyContentService is None or PolicySectionUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -538,7 +538,7 @@ async def admin_upsert_policy_section(
 
 @router.post("/api/admin/policies/sections")
 async def admin_create_policy_section(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if PolicyContentService is None or PolicySectionCreate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -563,7 +563,7 @@ async def admin_create_policy_section(
 
 @router.delete("/api/admin/policies/sections/{slug}")
 async def admin_delete_policy_section(
-    slug: str, email: str = Depends(require_admin)
+    slug: str, email: str = Depends(require_scope_email("content", "write"))
 ):
     if PolicyContentService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -585,7 +585,7 @@ async def admin_get_home_page(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/home-page")
 async def admin_upsert_home_page(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if HomePageSettingsService is None or HomePageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -612,7 +612,7 @@ async def admin_get_story_page(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/story-page")
 async def admin_upsert_story_page(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if StoryPageSettingsService is None or StoryPageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -639,7 +639,7 @@ async def admin_get_navigation(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/navigation")
 async def admin_upsert_navigation(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if NavigationSettingsService is None or NavigationSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -666,7 +666,7 @@ async def admin_get_contact_page(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/contact-page")
 async def admin_upsert_contact_page(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if ContactPageSettingsService is None or ContactPageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -693,7 +693,7 @@ async def admin_get_account_page(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/account-page")
 async def admin_upsert_account_page(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if AccountPageSettingsService is None or AccountPageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -720,7 +720,7 @@ async def admin_get_history_page(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/history-page")
 async def admin_upsert_history_page(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if HistoryPageSettingsService is None or HistoryPageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -747,7 +747,7 @@ async def admin_get_product_page(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/product-page")
 async def admin_upsert_product_page(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if ProductPageSettingsService is None or ProductPageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -777,7 +777,7 @@ async def admin_get_journal(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/journal/meta")
 async def admin_upsert_journal_meta(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if BlogService is None or JournalPageSettingsUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -804,7 +804,7 @@ async def admin_get_journal_meta(email: str = Depends(require_admin)):
 
 @router.post("/api/admin/blog-posts")
 async def admin_create_blog_post(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if BlogService is None or BlogPostCreate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -825,7 +825,7 @@ async def admin_create_blog_post(
 
 @router.put("/api/admin/blog-posts/{post_id}")
 async def admin_update_blog_post(
-    post_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    post_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("content", "write"))
 ):
     if BlogService is None or BlogPostUpdate is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -844,7 +844,7 @@ async def admin_update_blog_post(
 
 
 @router.delete("/api/admin/blog-posts/{post_id}")
-async def admin_delete_blog_post(post_id: str, email: str = Depends(require_admin)):
+async def admin_delete_blog_post(post_id: str, email: str = Depends(require_scope_email("content", "write"))):
     if BlogService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     deleted = await BlogService().delete_post(post_id)

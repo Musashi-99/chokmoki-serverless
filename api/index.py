@@ -156,6 +156,7 @@ from api.routes import (
     admin_reconciliation,
     admin_sms,
     admin_upload,
+    admin_users,
     auth,
     contact,
     coupons,
@@ -191,6 +192,7 @@ app.include_router(admin_inbox.router)
 app.include_router(admin_fraud.router)
 app.include_router(admin_reconciliation.router)
 app.include_router(admin_sms.router)
+app.include_router(admin_users.router)
 app.include_router(media.router)
 app.include_router(cron.router)
 app.include_router(cqrs.router)

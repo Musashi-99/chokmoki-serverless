@@ -3,7 +3,7 @@ sections + orders/ + order_logs/) and repopulates MongoDB + R2. Orders/
 order_logs are upserted by order_id, never wiped or replaced."""
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from api.bootstrap import (
-    db, R2Service, require_admin, logger, BundleParseError,
+    db, R2Service, require_admin, require_scope_email, logger, BundleParseError,
     parse_bundle_zip, restore_bundle, plan_restore, MAX_BUNDLE_BYTES,
 )
 
@@ -14,7 +14,7 @@ router = APIRouter()
 async def admin_import_bundle(
     bundle: UploadFile = File(...),
     dry_run: bool = False,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("products", "write")),
 ):
     """Restore all site content + images from a previously exported backup ZIP."""
     if db is None or R2Service is None or parse_bundle_zip is None:

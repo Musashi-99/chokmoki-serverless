@@ -108,6 +108,27 @@ class AdminSessionService:
         await redis.delete(key)
         return count
 
+    async def list_user_sessions(self, email: str) -> list[dict]:
+        """Hydrate every session_id in the user's session set into
+        {session_id, created_at, last_rotated_at}, skipping any that expired
+        out of Redis without a matching set removal."""
+        redis = await redis_client.get_client()
+        key = f"{self.USER_SESSIONS_PREFIX}{email.lower()}"
+        session_ids = await redis.smembers(key)
+        sessions: list[dict] = []
+        for session_id in session_ids:
+            session = await self.get_session(session_id)
+            if not session:
+                continue
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "created_at": session.get("created_at"),
+                    "last_rotated_at": session.get("last_rotated_at"),
+                }
+            )
+        return sessions
+
     async def rotate_refresh_token(self, refresh_token: str) -> Optional[tuple[str, str, str, str]]:
         """
         Validate refresh token and rotate it.

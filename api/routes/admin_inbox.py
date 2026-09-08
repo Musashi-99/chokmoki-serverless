@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from typing import Any, Dict
-from api.bootstrap import InboxService, require_admin
+from api.bootstrap import InboxService, require_admin, require_scope_email
 from api.json_utils import _json_response_content
 
 router = APIRouter()
@@ -16,7 +16,7 @@ async def admin_get_inbox(
     contacts_limit: int | None = None,
     newsletter_skip: int | None = None,
     newsletter_limit: int | None = None,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("inbox", "read")),
 ):
     if InboxService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -39,7 +39,7 @@ async def admin_get_inbox(
 
 @router.patch("/api/admin/inbox/contacts/{submission_id}")
 async def admin_patch_contact(
-    submission_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    submission_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("inbox", "read"))
 ):
     if InboxService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -51,7 +51,7 @@ async def admin_patch_contact(
 
 
 @router.delete("/api/admin/inbox/contacts/{submission_id}")
-async def admin_delete_contact(submission_id: str, email: str = Depends(require_admin)):
+async def admin_delete_contact(submission_id: str, email: str = Depends(require_scope_email("inbox", "read"))):
     if InboxService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     if not await InboxService().delete_contact(submission_id):
@@ -61,7 +61,7 @@ async def admin_delete_contact(submission_id: str, email: str = Depends(require_
 
 @router.patch("/api/admin/inbox/newsletter/{sub_id}")
 async def admin_patch_newsletter(
-    sub_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    sub_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("inbox", "read"))
 ):
     if InboxService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -73,7 +73,7 @@ async def admin_patch_newsletter(
 
 
 @router.delete("/api/admin/inbox/newsletter/{sub_id}")
-async def admin_delete_newsletter(sub_id: str, email: str = Depends(require_admin)):
+async def admin_delete_newsletter(sub_id: str, email: str = Depends(require_scope_email("inbox", "read"))):
     if InboxService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     if not await InboxService().delete_newsletter(sub_id):

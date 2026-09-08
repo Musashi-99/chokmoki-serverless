@@ -28,9 +28,19 @@ try:
     from src.services.system_log_service import SystemLogService
     from src.middleware.correlation_id import CorrelationIdMiddleware
     from src.plugins.rate_limit import RateLimitMiddleware
-    from src.plugins.admin_deps import require_admin, require_permission
+    from src.plugins.admin_deps import require_admin
     from src.plugins.admin_audit_middleware import AdminAuditMiddleware
     from src.plugins.admin_cookies import set_auth_cookies, clear_auth_cookies
+    from src.security.abac import require_scope, require_scope_email
+    from src.services.admin_user_service import (
+        AdminUserError,
+        AdminUserService,
+        RootAccountImmutableError,
+    )
+    from src.models.admin_user import AdminUserCreate, AdminUserPublic
+    from src.models.admin_rbac import AdminPermission
+    from src.services.email_service import EmailService
+    from src.alerts.events import EVENT_ADMIN_MUTATION, publish_alert
     from src.services.product_service import ProductService
     from src.services.category_service import CategoryService
     from src.models.product import JewelryProductCreate, JewelryProductUpdate
@@ -123,10 +133,20 @@ except Exception as e:
     settings = None
     RateLimitMiddleware = None
     require_admin = None
-    require_permission = None
     AdminAuditMiddleware = None
     set_auth_cookies = None
     clear_auth_cookies = None
+    require_scope = None
+    require_scope_email = None
+    AdminUserService = None
+    AdminUserError = None
+    RootAccountImmutableError = None
+    AdminUserCreate = None
+    AdminUserPublic = None
+    AdminPermission = None
+    EmailService = None
+    EVENT_ADMIN_MUTATION = None
+    publish_alert = None
     ProductService = None
     CategoryService = None
     JewelryProductCreate = None

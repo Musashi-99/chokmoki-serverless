@@ -10,25 +10,46 @@ router = APIRouter()
 
 class AdminLoginRequest(BaseModel):
     email: str
-    password: str
+    password: Optional[str] = None
     totp_code: Optional[str] = None
+
+
+@router.get("/api/admin/login/mode")
+async def admin_login_mode(email: str):
+    """Precheck for the frontend login form: tells it whether to render a
+    password field. Never distinguishes 'no such account' from 'account
+    exists but is inactive' — both come back as 'unknown'."""
+    if AdminAuthService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    mode = await AdminAuthService().resolve_login_mode(email)
+    return {"mode": mode}
 
 
 @router.post("/api/admin/login")
 async def admin_login(payload: AdminLoginRequest, request: Request):
-    """Authenticate admin; sets httpOnly session cookies."""
+    """Authenticate admin; sets httpOnly session cookies. Root (the
+    env-configured account) logs in with email+password(+TOTP) as before;
+    every invited admin logs in passwordless (email+TOTP only)."""
     if AdminAuthService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
     client_ip = get_client_ip(request) if get_client_ip else "unknown"
+    auth_service = AdminAuthService()
 
     try:
-        result = await AdminAuthService().authenticate(
-            payload.email,
-            payload.password,
-            payload.totp_code,
-            client_ip=client_ip,
-        )
+        if payload.password is not None:
+            result = await auth_service.authenticate(
+                payload.email,
+                payload.password,
+                payload.totp_code,
+                client_ip=client_ip,
+            )
+        else:
+            result = await auth_service.authenticate_passwordless(
+                payload.email,
+                payload.totp_code,
+                client_ip=client_ip,
+            )
     except MFACodeRequired:
         raise HTTPException(status_code=401, detail="MFA code required")
     except AccountLockedError as exc:
@@ -38,13 +59,17 @@ async def admin_login(payload: AdminLoginRequest, request: Request):
             headers={"Retry-After": str(exc.retry_after_seconds)},
         )
     if not result:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        detail = "Invalid email or password" if payload.password is not None else "Invalid email or code"
+        raise HTTPException(status_code=401, detail=detail)
 
     body = {
         "email": result.email,
         "role": result.role,
         "expires_in": result.tokens.expires_in,
         "mfa_enabled": settings.admin_mfa_enabled if settings else False,
+        "scopes": sorted(result.scopes) if result.scopes else [],
+        "region": result.region,
+        "is_root": result.is_root,
     }
     if settings and settings.admin_legacy_bearer_enabled:
         body["token"] = result.tokens.access_token
@@ -117,4 +142,7 @@ async def admin_me(request: Request, email: str = Depends(require_admin)):
         "email": email,
         "role": principal.role if principal else (AdminRole.SUPER_ADMIN.value if AdminRole else "super_admin"),
         "mfa_enabled": settings.admin_mfa_enabled if settings else False,
+        "scopes": sorted(principal.scopes) if principal and principal.scopes else [],
+        "region": principal.region if principal else None,
+        "is_root": bool(principal.is_root) if principal else False,
     }

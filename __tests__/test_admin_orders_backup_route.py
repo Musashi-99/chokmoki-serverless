@@ -64,9 +64,19 @@ class TestAdminOrdersExportRoute:
         assert response.status_code == 401
 
     def test_export_returns_downloadable_json(self, api_module):
-        from api.bootstrap import require_admin
+        from src.models.admin_auth import AdminPrincipal
+        from src.plugins.admin_deps import resolve_admin_principal
 
-        api_module.app.dependency_overrides[require_admin] = lambda: "admin@test.com"
+        fake_principal = AdminPrincipal(
+            email="admin@test.com",
+            role="super_admin",
+            session_id="test-session",
+            jti="test-jti",
+            scopes=frozenset({"*"}),
+            region=None,
+            is_root=True,
+        )
+        api_module.app.dependency_overrides[resolve_admin_principal] = lambda: fake_principal
         try:
             with (
                 patch("api.routes.admin_orders_backup.export_orders_backup", new_callable=AsyncMock) as mock_export,
@@ -77,7 +87,7 @@ class TestAdminOrdersExportRoute:
                 client = TestClient(api_module.app, raise_server_exceptions=True)
                 response = client.get("/api/admin/orders/export")
         finally:
-            api_module.app.dependency_overrides.pop(require_admin, None)
+            api_module.app.dependency_overrides.pop(resolve_admin_principal, None)
 
         assert response.status_code == 200
         assert "attachment" in response.headers["content-disposition"]

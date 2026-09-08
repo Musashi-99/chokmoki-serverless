@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from typing import Callable, Optional
+from typing import Optional
 
 from fastapi import Cookie, Depends, Header, HTTPException, Request
 
@@ -64,18 +64,10 @@ async def _enforce_csrf(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
-def require_permission(permission: str) -> Callable:
-    async def _dependency(
-        request: Request,
-        principal: AdminPrincipal = Depends(resolve_admin_principal),
-    ) -> AdminPrincipal:
-        if settings.csrf_enabled and getattr(request.state, "admin_auth_via_cookie", False):
-            await _enforce_csrf(request)
-        if not principal.has_permission(permission):
-            raise HTTPException(status_code=403, detail=f"Missing permission: {permission}")
-        request.state.admin_email = principal.email
-        request.state.admin_principal = principal
-        return principal
-
-    return _dependency
+# Scope/ABAC enforcement (require_scope) lives in src/security/abac.py, which
+# imports resolve_admin_principal and _enforce_csrf from this module — kept
+# here rather than duplicated so CSRF/session resolution has exactly one
+# implementation. The old require_permission (role.has_permission-based,
+# never wired into any route) has been fully replaced by Vakt-backed
+# require_scope.
 

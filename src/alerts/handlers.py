@@ -42,6 +42,11 @@ SETTINGS_RESOURCES = {
     "blog-posts",
     "journal",
     "inbox",
+    # Admin-user management (invite/deactivate/regenerate-TOTP/session
+    # revoke) — api/routes/admin_users.py. Always alert-worthy: this is
+    # exactly the "who is doing what" surface the multi-admin feature needs
+    # visible in Telegram.
+    "admins",
 }
 
 
@@ -165,7 +170,42 @@ async def _send_order_email(order_id: str, kind: str, status: Optional[str] = No
             logger.error(f"Order email '{kind}' failed for order {order_id}: {e}")
 
 
-async def _send_to_channel(channel: NotificationChannel, text: str, label: str) -> None:
+async def _resolve_actor_chat_ids(actor_email: Optional[str]) -> list[str]:
+    """For alerts that carry an acting admin's email, resolve where to also
+    mirror the notification: the admin's own telegram_chat_id if set, else
+    their region's designated REGIONAL_ADMIN's chat id. Returns [] (never
+    raises) if admin_users lookups aren't available — this must never block
+    the global send."""
+    if not actor_email:
+        return []
+    try:
+        from src.services.admin_user_service import AdminUserService
+
+        admin_users = AdminUserService()
+        actor = await admin_users.get_routing_for_actor(actor_email)
+        if not actor:
+            return []
+        if actor.get("telegram_chat_id"):
+            return [actor["telegram_chat_id"]]
+        region = actor.get("region")
+        if region:
+            region_chat_id = await admin_users.get_region_chat_id(region)
+            if region_chat_id:
+                return [region_chat_id]
+        return []
+    except Exception as exc:
+        if logger:
+            logger.warning(f"Telegram routing lookup failed for {actor_email}: {exc}")
+        return []
+
+
+async def _send_to_channel(
+    channel: NotificationChannel,
+    text: str,
+    label: str,
+    *,
+    actor_email: Optional[str] = None,
+) -> None:
     """Every handler below only has ops-facing side effects left to do here
     (customer-facing SMS/email already happened, independently, above) — a
     disabled Telegram channel is a deliberate config choice, not a failure,
@@ -174,10 +214,16 @@ async def _send_to_channel(channel: NotificationChannel, text: str, label: str) 
     including re-sending the customer's order-confirmation/status email on
     every retry, for as long as Telegram stays off). Only an ACTUALLY
     enabled channel failing to send is worth raising/retrying over.
+
+    `actor_email`, when the event payload carries one (admin mutations,
+    price changes), is resolved to the acting admin's personal/region
+    Telegram chat so root's global chat AND the acting admin's own chat both
+    see it — "know which user is doing what".
     """
     if not channel.is_enabled():
         return
-    sent = await channel.send(text)
+    extra_chat_ids = await _resolve_actor_chat_ids(actor_email)
+    sent = await channel.send(text, extra_chat_ids=extra_chat_ids)
     if not sent:
         raise RuntimeError(f"{label} channel send failed")
 
@@ -237,7 +283,12 @@ class SettingsChangedHandler(AlertHandler):
         return event.type == EVENT_ADMIN_MUTATION and event.payload.get("resource") in SETTINGS_RESOURCES
 
     async def _process(self, event: AlertEvent) -> bool:
-        await _send_to_channel(self._channel, _format_settings_alert(event.payload), "Settings alert")
+        await _send_to_channel(
+            self._channel,
+            _format_settings_alert(event.payload),
+            "Settings alert",
+            actor_email=event.payload.get("actor_email"),
+        )
         return True
 
 
@@ -250,7 +301,12 @@ class PriceChangedHandler(AlertHandler):
         return event.type == EVENT_PRODUCT_PRICE_CHANGED
 
     async def _process(self, event: AlertEvent) -> bool:
-        await _send_to_channel(self._channel, _format_price_changed_alert(event.payload), "Price-change alert")
+        await _send_to_channel(
+            self._channel,
+            _format_price_changed_alert(event.payload),
+            "Price-change alert",
+            actor_email=event.payload.get("actor_email"),
+        )
         return True
 
 

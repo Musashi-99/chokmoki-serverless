@@ -11,6 +11,7 @@ from api.bootstrap import (
     SystemLogService,
     redis_client,
     require_admin,
+    require_scope_email,
 )
 from api.json_utils import _json_response_content
 
@@ -27,7 +28,7 @@ BREAKER_NAMES = ("razorpay", "shiprocket", "telegram")
 @router.get("/api/admin/payment-reconciliation/runs")
 async def admin_list_reconciliation_runs(
     limit: int = 50,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("orders", "read")),
 ):
     if PaymentReconciliationService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -39,7 +40,7 @@ async def admin_list_reconciliation_runs(
 async def admin_list_payment_attempts(
     status: Optional[str] = None,
     limit: int = 100,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("orders", "read")),
 ):
     if PaymentReconciliationService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -52,7 +53,7 @@ async def admin_list_system_logs(
     component: Optional[str] = None,
     level: Optional[str] = None,
     limit: int = 100,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("audit", "read")),
 ):
     """Durable operational log — fallback triggers, detected inconsistencies,
     degraded-mode operation. See src/services/system_log_service.py.
@@ -64,7 +65,7 @@ async def admin_list_system_logs(
 
 
 @router.get("/api/admin/system-logs/summary")
-async def admin_system_logs_summary(email: str = Depends(require_admin)):
+async def admin_system_logs_summary(email: str = Depends(require_scope_email("audit", "read"))):
     """Distinct components + per-level counts — powers the System Logs
     page's filter dropdowns without hardcoding component names in the UI.
     """
@@ -75,7 +76,7 @@ async def admin_system_logs_summary(email: str = Depends(require_admin)):
 
 
 @router.get("/api/admin/observability")
-async def admin_observability(email: str = Depends(require_admin)):
+async def admin_observability(email: str = Depends(require_scope_email("audit", "read"))):
     """Live operational snapshot, read from the shared cross-process state
     (Redis) rather than this process's own Prometheus registry — so it
     reflects the backend AND worker together:

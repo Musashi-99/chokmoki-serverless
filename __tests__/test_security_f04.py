@@ -6,6 +6,7 @@ import os
 import sys
 
 import pytest
+from cryptography.fernet import Fernet
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -24,6 +25,7 @@ STRONG_CRON_SECRET = "cron-secret-rotation-32chars!"
 STRONG_METRICS_TOKEN = "metrics-token-rotation-32ch!"
 STRONG_ADMIN_PASSWORD = "production-admin-pass-99!"
 STRONG_ADMIN_HASH = hash_password(STRONG_ADMIN_PASSWORD)
+STRONG_ADMIN_SECRET_ENCRYPTION_KEY = Fernet.generate_key().decode()
 
 
 def _base_production_env(monkeypatch) -> None:
@@ -38,6 +40,7 @@ def _base_production_env(monkeypatch) -> None:
     monkeypatch.setenv("METRICS_TOKEN", STRONG_METRICS_TOKEN)
     monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("ADMIN_PASSWORD_HASH", STRONG_ADMIN_HASH)
+    monkeypatch.setenv("ADMIN_SECRET_ENCRYPTION_KEY", STRONG_ADMIN_SECRET_ENCRYPTION_KEY)
     monkeypatch.setenv("FRAUD_ENABLED", "true")
     monkeypatch.setenv("IDEMPOTENCY_ENABLED", "true")
     monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
@@ -139,6 +142,25 @@ class TestProductionConfigGuard:
 
         with pytest.raises(ValueError, match="METRICS_TOKEN"):
             Settings(_env_file=None)
+
+    def test_production_requires_admin_secret_encryption_key(self, monkeypatch):
+        _base_production_env(monkeypatch)
+        monkeypatch.delenv("ADMIN_SECRET_ENCRYPTION_KEY", raising=False)
+
+        with pytest.raises(ValueError, match="ADMIN_SECRET_ENCRYPTION_KEY must be set"):
+            Settings(_env_file=None)
+
+    def test_production_rejects_malformed_admin_secret_encryption_key(self, monkeypatch):
+        _base_production_env(monkeypatch)
+        monkeypatch.setenv("ADMIN_SECRET_ENCRYPTION_KEY", "not-a-real-fernet-key")
+
+        with pytest.raises(ValueError, match="ADMIN_SECRET_ENCRYPTION_KEY must be a valid Fernet key"):
+            Settings(_env_file=None)
+
+    def test_production_accepts_valid_admin_secret_encryption_key(self, monkeypatch):
+        _base_production_env(monkeypatch)
+        settings = Settings(_env_file=None)
+        assert settings.admin_secret_encryption_key == STRONG_ADMIN_SECRET_ENCRYPTION_KEY
 
     def test_jwt_rotation_secret_is_validated(self, monkeypatch):
         _base_production_env(monkeypatch)

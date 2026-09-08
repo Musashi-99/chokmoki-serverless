@@ -6,13 +6,13 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
-from api.bootstrap import Msg91Service, SmsTemplateService, SmsTemplateUpdate, SystemLogService, require_admin
+from api.bootstrap import Msg91Service, SmsTemplateService, SmsTemplateUpdate, SystemLogService, require_admin, require_scope_email
 
 router = APIRouter()
 
 
 @router.get("/api/admin/sms/templates")
-async def admin_list_sms_templates(email: str = Depends(require_admin)):
+async def admin_list_sms_templates(email: str = Depends(require_scope_email("settings", "write"))):
     if SmsTemplateService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     templates = await SmsTemplateService().list_all()
@@ -21,7 +21,7 @@ async def admin_list_sms_templates(email: str = Depends(require_admin)):
 
 @router.put("/api/admin/sms/templates/{key}")
 async def admin_upsert_sms_template(
-    key: str, payload: SmsTemplateUpdate, email: str = Depends(require_admin)
+    key: str, payload: SmsTemplateUpdate, email: str = Depends(require_scope_email("settings", "write"))
 ):
     if SmsTemplateService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -35,7 +35,7 @@ class SmsTestRequest(BaseModel):
 
 
 @router.post("/api/admin/sms/test")
-async def admin_send_test_sms(payload: SmsTestRequest, email: str = Depends(require_admin)):
+async def admin_send_test_sms(payload: SmsTestRequest, email: str = Depends(require_scope_email("settings", "write"))):
     if Msg91Service is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
@@ -66,7 +66,7 @@ async def admin_send_test_sms(payload: SmsTestRequest, email: str = Depends(requ
 
 
 @router.get("/api/admin/sms/logs")
-async def admin_sms_logs(limit: int = 100, email: str = Depends(require_admin)):
+async def admin_sms_logs(limit: int = 100, email: str = Depends(require_scope_email("settings", "write"))):
     if SystemLogService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
     return await SystemLogService().list_logs(component="sms", limit=limit)

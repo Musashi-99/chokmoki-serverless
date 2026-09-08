@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     jwt_refresh_ttl_days: int = Field(default=7, env="JWT_REFRESH_TTL_DAYS")
     jwt_secret_previous: Optional[str] = Field(default=None, env="JWT_SECRET_PREVIOUS")
     admin_mfa_secret: Optional[str] = Field(default=None, env="ADMIN_MFA_SECRET")
+    # Fernet key (base64 urlsafe, 32 raw bytes) used to encrypt per-admin TOTP
+    # secrets at rest in the `admin_users` Mongo collection — generate with
+    # `Fernet.generate_key()`. Required in production (see
+    # secrets_validation.py); local/dev boots without it only because
+    # validate_production_security() below is skipped outside production.
+    admin_secret_encryption_key: Optional[str] = Field(
+        default=None, env="ADMIN_SECRET_ENCRYPTION_KEY"
+    )
     csrf_enabled: bool = Field(default=True, env="CSRF_ENABLED")
     admin_cookie_samesite: str = Field(default="lax", env="ADMIN_COOKIE_SAMESITE")
     admin_cookie_domain: Optional[str] = Field(default=None, env="ADMIN_COOKIE_DOMAIN")
@@ -460,6 +468,7 @@ class Settings(BaseSettings):
             r2_access_key_id=self.r2_access_key_id,
             r2_secret_access_key=self.r2_secret_access_key,
             razorpay_webhook_secret=self.razorpay_webhook_secret,
+            admin_secret_encryption_key=self.admin_secret_encryption_key,
         )
 
         if not origins:

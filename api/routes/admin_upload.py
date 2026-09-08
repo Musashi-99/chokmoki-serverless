@@ -1,7 +1,7 @@
 """Admin media upload to R2."""
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from typing import List
-from api.bootstrap import R2Service, UploadValidationError, logger, require_admin, validate_upload
+from api.bootstrap import R2Service, UploadValidationError, logger, require_admin, require_scope_email, validate_upload
 from src.services.media_resize import recompress_upload
 
 router = APIRouter()
@@ -11,7 +11,7 @@ router = APIRouter()
 async def admin_upload(
     files: List[UploadFile] = File(...),
     folder: str = Form("products"),
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("media", "upload")),
 ):
     """Upload one or more media files to the Cloudflare R2 'chokmoki' bucket."""
     if R2Service is None:

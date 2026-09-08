@@ -1,3 +1,5 @@
+from typing import Optional
+
 from telegram import Bot
 from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 
@@ -25,7 +27,7 @@ class TelegramService:
             return False
         return True
 
-    async def send_message(self, text: str) -> bool:
+    async def send_message(self, text: str, chat_id: Optional[str] = None) -> bool:
         """Send message to Telegram using python-telegram-bot SDK. Never
         raises — a lost alert is genuinely low-stakes (unlike a lost
         payment/shipment event), so the public contract stays "return False
@@ -34,14 +36,21 @@ class TelegramService:
         that actually succeeded the first time just means a duplicate
         Telegram message — an acceptable, low-severity tradeoff for not
         losing the notification.
+
+        `chat_id`, when provided, targets that chat instead of the global
+        `settings.telegram_chat_id` — used for per-admin/region routing
+        (src/alerts/handlers.py). The bot/token itself is still the single
+        global one; `is_enabled()` gates on that, not on `chat_id`.
         """
         if not self.is_enabled():
             return False
 
+        target_chat_id = chat_id or settings.telegram_chat_id
+
         async def _send() -> bool:
             bot = Bot(token=settings.telegram_bot_token)
             await bot.send_message(
-                chat_id=settings.telegram_chat_id,
+                chat_id=target_chat_id,
                 text=text,
                 parse_mode="Markdown",
                 disable_web_page_preview=False,

@@ -146,6 +146,21 @@ def validate_optional_jwt_secret(
     return validate_jwt_secret(normalized, field_name=field_name)
 
 
+def validate_fernet_key(value: Optional[str], *, field_name: str) -> List[str]:
+    errors: List[str] = []
+    normalized = normalize_secret(value or "")
+    if not normalized:
+        errors.append(f"{field_name} must be set")
+        return errors
+    try:
+        from cryptography.fernet import Fernet
+
+        Fernet(normalized.encode("utf-8"))
+    except Exception:
+        errors.append(f"{field_name} must be a valid Fernet key (Fernet.generate_key())")
+    return errors
+
+
 def validate_r2_credentials(
     access_key_id: str, secret_access_key: str
 ) -> List[str]:
@@ -180,6 +195,7 @@ def collect_production_secret_errors(
   r2_access_key_id: str,
   r2_secret_access_key: str,
   razorpay_webhook_secret: Optional[str],
+  admin_secret_encryption_key: Optional[str] = None,
 ) -> List[str]:
     errors: List[str] = []
 
@@ -215,6 +231,12 @@ def collect_production_secret_errors(
         )
 
     errors.extend(validate_r2_credentials(r2_access_key_id, r2_secret_access_key))
+
+    errors.extend(
+        validate_fernet_key(
+            admin_secret_encryption_key, field_name="ADMIN_SECRET_ENCRYPTION_KEY"
+        )
+    )
 
     if normalize_secret(razorpay_webhook_secret):
         errors.extend(

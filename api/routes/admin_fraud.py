@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from typing import Any, Dict
-from api.bootstrap import FraudReviewService, require_admin
+from api.bootstrap import FraudReviewService, require_admin, require_scope_email
 from api.json_utils import _json_response_content
 
 router = APIRouter()
@@ -12,7 +12,7 @@ router = APIRouter()
 async def admin_list_fraud_reviews(
     skip: int = 0,
     limit: int = 50,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("orders", "write")),
 ):
     if FraudReviewService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -24,7 +24,7 @@ async def admin_list_fraud_reviews(
 async def admin_resolve_fraud_review(
     review_id: str,
     payload: Dict[str, Any],
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("orders", "write")),
 ):
     if FraudReviewService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")

@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from typing import Any, Dict, List, Optional
 import json
-from api.bootstrap import CategoryService, JewelryCategoryCreate, JewelryCategoryUpdate, JewelryProductCreate, JewelryProductUpdate, ProductService, build_update_payload, cache, require_admin, require_update_fields
+from api.bootstrap import CategoryService, JewelryCategoryCreate, JewelryCategoryUpdate, JewelryProductCreate, JewelryProductUpdate, ProductService, build_update_payload, cache, require_admin, require_update_fields, require_scope_email
 from api.json_utils import JSONEncoder
 
 router = APIRouter()
@@ -18,7 +18,7 @@ async def admin_list_products(
     active: Optional[bool] = None,
     is_best_seller: Optional[bool] = None,
     is_curated: Optional[bool] = None,
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("products", "read")),
 ):
     """List every product (including inactive) for the admin dashboard."""
     if ProductService is None:
@@ -40,7 +40,7 @@ async def admin_list_products(
 
 @router.post("/api/admin/products")
 async def admin_create_product(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("products", "write"))
 ):
     """Create a product. Media URLs should already point to R2 (see /api/admin/upload)."""
     if ProductService is None or JewelryProductCreate is None:
@@ -68,7 +68,7 @@ async def admin_create_product(
 
 
 @router.get("/api/admin/products/{product_id}")
-async def admin_get_product(product_id: str, email: str = Depends(require_admin)):
+async def admin_get_product(product_id: str, email: str = Depends(require_scope_email("products", "read"))):
     """Get a single product by MongoDB id."""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -83,7 +83,7 @@ async def admin_get_product(product_id: str, email: str = Depends(require_admin)
 
 @router.put("/api/admin/products/{product_id}")
 async def admin_update_product(
-    product_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    product_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("products", "write"))
 ):
     """Update a product by its MongoDB id."""
     if ProductService is None:
@@ -116,7 +116,7 @@ async def admin_update_product(
 
 
 @router.delete("/api/admin/products/{product_id}")
-async def admin_delete_product(product_id: str, email: str = Depends(require_admin)):
+async def admin_delete_product(product_id: str, email: str = Depends(require_scope_email("products", "write"))):
     """Delete a product by its MongoDB id."""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -140,7 +140,7 @@ async def admin_delete_product(product_id: str, email: str = Depends(require_adm
 
 
 @router.get("/api/admin/categories")
-async def admin_list_categories(email: str = Depends(require_admin)):
+async def admin_list_categories(email: str = Depends(require_scope_email("products", "read"))):
     """List every category for the admin dashboard."""
     if CategoryService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -155,7 +155,7 @@ async def admin_list_categories(email: str = Depends(require_admin)):
 
 @router.post("/api/admin/categories")
 async def admin_create_category(
-    payload: Dict[str, Any], email: str = Depends(require_admin)
+    payload: Dict[str, Any], email: str = Depends(require_scope_email("products", "write"))
 ):
     """Create a category."""
     if CategoryService is None or JewelryCategoryCreate is None:
@@ -193,7 +193,7 @@ def _category_update_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.put("/api/admin/categories/{category_id}")
 async def admin_update_category(
-    category_id: str, payload: Dict[str, Any], email: str = Depends(require_admin)
+    category_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("products", "write"))
 ):
     """Update a category by its MongoDB id."""
     if CategoryService is None:
@@ -221,7 +221,7 @@ async def admin_update_category(
 
 
 @router.delete("/api/admin/categories/{category_id}")
-async def admin_delete_category(category_id: str, email: str = Depends(require_admin)):
+async def admin_delete_category(category_id: str, email: str = Depends(require_scope_email("products", "write"))):
     """Delete a category by its MongoDB id."""
     if CategoryService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")

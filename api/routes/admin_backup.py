@@ -13,6 +13,7 @@ from api.bootstrap import (
     db,
     cache,
     require_admin,
+    require_scope_email,
     logger,
     settings,
     BackupParseError,
@@ -52,7 +53,7 @@ async def _read_and_check_size(upload: UploadFile) -> bytes:
 
 
 @router.get("/api/admin/export/config")
-async def admin_export_config(email: str = Depends(require_admin)):
+async def admin_export_config(email: str = Depends(require_scope_email("settings", "write"))):
     """Dump every content collection except orders/order_logs as one JSON file."""
     if db is None or export_config is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -67,7 +68,7 @@ async def admin_export_config(email: str = Depends(require_admin)):
 async def admin_import_config(
     file: UploadFile = File(...),
     mode: Literal["wipe", "merge"] = Query("merge"),
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("settings", "write")),
 ):
     """Restore the config bundle. mode=wipe drops and reinserts each listed
     collection; mode=merge upserts by _id/slug, leaving everything else untouched."""
@@ -98,7 +99,7 @@ async def admin_import_config(
 
 
 @router.get("/api/admin/export/orders")
-async def admin_export_orders_json(email: str = Depends(require_admin)):
+async def admin_export_orders_json(email: str = Depends(require_scope_email("settings", "write"))):
     """Dump orders + order_logs only, as one JSON file."""
     if db is None or export_orders is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -113,7 +114,7 @@ async def admin_export_orders_json(email: str = Depends(require_admin)):
 async def admin_import_orders_json(
     file: UploadFile = File(...),
     mode: Literal["wipe", "merge"] = Query("merge"),
-    email: str = Depends(require_admin),
+    email: str = Depends(require_scope_email("settings", "write")),
 ):
     """Restore orders + order_logs only, independent of the config endpoints."""
     if db is None or parse_orders_backup is None:

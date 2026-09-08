@@ -77,9 +77,19 @@ class TestAdminImportRoute:
         assert response.status_code == 401
 
     def test_accepts_zip_and_returns_summary(self, api_module):
-        from api.bootstrap import require_admin
+        from src.models.admin_auth import AdminPrincipal
+        from src.plugins.admin_deps import resolve_admin_principal
 
-        api_module.app.dependency_overrides[require_admin] = lambda: "admin@test.com"
+        fake_principal = AdminPrincipal(
+            email="admin@test.com",
+            role="super_admin",
+            session_id="test-session",
+            jti="test-jti",
+            scopes=frozenset({"*"}),
+            region=None,
+            is_root=True,
+        )
+        api_module.app.dependency_overrides[resolve_admin_principal] = lambda: fake_principal
         try:
             with (
                 patch("api.routes.admin_import.restore_bundle", new_callable=AsyncMock) as mock_restore,
@@ -96,7 +106,7 @@ class TestAdminImportRoute:
                 files = {"bundle": ("backup.zip", _minimal_bundle_zip(), "application/zip")}
                 response = client.post("/api/admin/import", files=files)
         finally:
-            api_module.app.dependency_overrides.pop(require_admin, None)
+            api_module.app.dependency_overrides.pop(resolve_admin_principal, None)
 
         assert response.status_code == 200
         body = response.json()
@@ -104,38 +114,68 @@ class TestAdminImportRoute:
         assert body["assets_restored"] == 0
 
     def test_rejects_invalid_zip_with_400(self, api_module):
-        from api.bootstrap import require_admin
+        from src.models.admin_auth import AdminPrincipal
+        from src.plugins.admin_deps import resolve_admin_principal
 
-        api_module.app.dependency_overrides[require_admin] = lambda: "admin@test.com"
+        fake_principal = AdminPrincipal(
+            email="admin@test.com",
+            role="super_admin",
+            session_id="test-session",
+            jti="test-jti",
+            scopes=frozenset({"*"}),
+            region=None,
+            is_root=True,
+        )
+        api_module.app.dependency_overrides[resolve_admin_principal] = lambda: fake_principal
         try:
             client = TestClient(api_module.app, raise_server_exceptions=True)
             files = {"bundle": ("backup.zip", b"not a zip", "application/zip")}
             response = client.post("/api/admin/import", files=files)
         finally:
-            api_module.app.dependency_overrides.pop(require_admin, None)
+            api_module.app.dependency_overrides.pop(resolve_admin_principal, None)
 
         assert response.status_code == 400
 
     def test_rejects_oversized_bundle_with_400(self, api_module, monkeypatch):
-        from api.bootstrap import require_admin
+        from src.models.admin_auth import AdminPrincipal
+        from src.plugins.admin_deps import resolve_admin_principal
         import api.routes.admin_import as admin_import_module
 
         monkeypatch.setattr(admin_import_module, "MAX_BUNDLE_BYTES", 10)
-        api_module.app.dependency_overrides[require_admin] = lambda: "admin@test.com"
+        fake_principal = AdminPrincipal(
+            email="admin@test.com",
+            role="super_admin",
+            session_id="test-session",
+            jti="test-jti",
+            scopes=frozenset({"*"}),
+            region=None,
+            is_root=True,
+        )
+        api_module.app.dependency_overrides[resolve_admin_principal] = lambda: fake_principal
         try:
             client = TestClient(api_module.app, raise_server_exceptions=True)
             files = {"bundle": ("backup.zip", _minimal_bundle_zip(), "application/zip")}
             response = client.post("/api/admin/import", files=files)
         finally:
-            api_module.app.dependency_overrides.pop(require_admin, None)
+            api_module.app.dependency_overrides.pop(resolve_admin_principal, None)
 
         assert response.status_code == 400
         assert "exceeds maximum size" in response.json()["detail"]
 
     def test_dry_run_does_not_call_restore_bundle(self, api_module):
-        from api.bootstrap import require_admin
+        from src.models.admin_auth import AdminPrincipal
+        from src.plugins.admin_deps import resolve_admin_principal
 
-        api_module.app.dependency_overrides[require_admin] = lambda: "admin@test.com"
+        fake_principal = AdminPrincipal(
+            email="admin@test.com",
+            role="super_admin",
+            session_id="test-session",
+            jti="test-jti",
+            scopes=frozenset({"*"}),
+            region=None,
+            is_root=True,
+        )
+        api_module.app.dependency_overrides[resolve_admin_principal] = lambda: fake_principal
         try:
             with (
                 patch("api.routes.admin_import.restore_bundle", new_callable=AsyncMock) as mock_restore,
@@ -150,7 +190,7 @@ class TestAdminImportRoute:
                 files = {"bundle": ("backup.zip", _minimal_bundle_zip(), "application/zip")}
                 response = client.post("/api/admin/import?dry_run=true", files=files)
         finally:
-            api_module.app.dependency_overrides.pop(require_admin, None)
+            api_module.app.dependency_overrides.pop(resolve_admin_principal, None)
 
         assert response.status_code == 200
         mock_restore.assert_not_called()

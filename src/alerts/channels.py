@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict, List, Optional
 
+from src.plugins.logger import logger
 from src.services.msg91_service import Msg91Service
 from src.services.telegram_service import TelegramService
 
@@ -14,7 +15,7 @@ class NotificationChannel(ABC):
     """
 
     @abstractmethod
-    async def send(self, text: str) -> bool: ...
+    async def send(self, text: str, extra_chat_ids: Optional[List[str]] = None) -> bool: ...
 
 
 class TelegramChannel(NotificationChannel):
@@ -24,10 +25,25 @@ class TelegramChannel(NotificationChannel):
     def is_enabled(self) -> bool:
         return self._telegram.is_enabled()
 
-    async def send(self, text: str) -> bool:
+    async def send(self, text: str, extra_chat_ids: Optional[List[str]] = None) -> bool:
+        """Sends to the global chat first (unchanged behavior/return value),
+        then best-effort mirrors the same text to any extra per-admin/region
+        chat ids — a secondary send failing never fails the primary send,
+        matching TelegramService's own "never raise" contract."""
         if not self._telegram.is_enabled():
             return False
-        return await self._telegram.send_message(text)
+        sent = await self._telegram.send_message(text)
+
+        for chat_id in extra_chat_ids or []:
+            if not chat_id:
+                continue
+            try:
+                await self._telegram.send_message(text, chat_id=chat_id)
+            except Exception as exc:
+                if logger:
+                    logger.warning(f"Secondary Telegram send to {chat_id} failed: {exc}")
+
+        return sent
 
 
 class SmsChannel:

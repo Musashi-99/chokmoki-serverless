@@ -10,10 +10,14 @@ from src.security.client_ip import get_client_ip
 class AdminAuditMiddleware(BaseHTTPMiddleware):
     SKIP_PATHS = {
         "/api/admin/login",
+        "/api/admin/login/mode",
         "/api/admin/refresh",
         "/api/admin/logout",
         "/api/admin/me",
     }
+    # Public, unauthenticated (no admin_principal to audit against) —
+    # matched by prefix since the token is part of the path.
+    SKIP_PREFIXES = ("/api/admin/enroll/",)
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -22,7 +26,7 @@ class AdminAuditMiddleware(BaseHTTPMiddleware):
             return response
         if request.method in {"GET", "HEAD", "OPTIONS"}:
             return response
-        if path in self.SKIP_PATHS:
+        if path in self.SKIP_PATHS or path.startswith(self.SKIP_PREFIXES):
             return response
 
         principal = getattr(request.state, "admin_principal", None)
