@@ -42,13 +42,21 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         AdminPermission.COUPONS_WRITE.value,
         AdminPermission.INBOX_READ.value,
     },
-    # Regional admins are intentionally narrow: view orders in their own
-    # region(s), manage coupons in their own region(s), edit product prices
-    # in their own region(s) only. No content/settings/media/inbox/admin
-    # access, and no full products:write (see admin_catalog.py's
-    # require_any_scope(products:write, products:price_write) split).
+    # Regional admins run their own region's operations end to end: manage
+    # orders (view, update status, pack, ship/cancel shipment, notes,
+    # mark-payment-collected) in their own region(s), manage coupons in
+    # their own region(s), edit product prices in their own region(s).
+    # ORDERS_WRITE is safe to grant broadly here because every order
+    # mutation route already enforces region scope independently
+    # (admin_orders.py's _enforce_order_region — 404s any order outside
+    # principal.regions regardless of scope), so this can never let a
+    # regional admin touch another region's orders. No content/settings/
+    # media/inbox/admin access, and no full products:write (see
+    # admin_catalog.py's require_any_scope(products:write,
+    # products:price_write) split).
     AdminRole.REGIONAL_ADMIN.value: {
         AdminPermission.ORDERS_READ.value,
+        AdminPermission.ORDERS_WRITE.value,
         AdminPermission.PRODUCTS_READ.value,
         AdminPermission.PRODUCTS_PRICE_WRITE.value,
         AdminPermission.COUPONS_READ.value,
