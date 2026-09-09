@@ -61,6 +61,33 @@ def test_root_wildcard_scope_and_is_root_allows_admins():
     assert is_allowed(principal, "admins", "write") is True
 
 
+def test_products_price_write_denied_without_scope():
+    principal = _principal(scopes=frozenset())
+    assert is_allowed(principal, "products", "price_write") is False
+
+
+def test_products_price_write_allowed_with_scope():
+    principal = _principal(scopes=frozenset({"products:price_write"}))
+    assert is_allowed(principal, "products", "price_write") is True
+    assert is_allowed(principal, "products", "write") is False
+
+
+def test_coupons_read_denied_without_scope():
+    principal = _principal(scopes=frozenset())
+    assert is_allowed(principal, "coupons", "read") is False
+
+
+def test_coupons_write_denied_without_scope():
+    principal = _principal(scopes=frozenset())
+    assert is_allowed(principal, "coupons", "write") is False
+
+
+def test_coupons_read_and_write_allowed_with_scope():
+    principal = _principal(scopes=frozenset({"coupons:read", "coupons:write"}))
+    assert is_allowed(principal, "coupons", "read") is True
+    assert is_allowed(principal, "coupons", "write") is True
+
+
 def test_region_never_gates_access():
     """Region must never appear in any Vakt rule — a regional admin with
     the right scope is allowed regardless of region value, and a missing

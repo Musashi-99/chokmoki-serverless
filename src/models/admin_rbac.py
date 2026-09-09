@@ -13,6 +13,9 @@ class AdminPermission(str, Enum):
     ORDERS_WRITE = "orders:write"
     PRODUCTS_READ = "products:read"
     PRODUCTS_WRITE = "products:write"
+    PRODUCTS_PRICE_WRITE = "products:price_write"
+    COUPONS_READ = "coupons:read"
+    COUPONS_WRITE = "coupons:write"
     CONTENT_WRITE = "content:write"
     MEDIA_UPLOAD = "media:upload"
     SETTINGS_WRITE = "settings:write"
@@ -35,11 +38,21 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         AdminPermission.ORDERS_WRITE.value,
         AdminPermission.PRODUCTS_READ.value,
         AdminPermission.PRODUCTS_WRITE.value,
+        AdminPermission.COUPONS_READ.value,
+        AdminPermission.COUPONS_WRITE.value,
         AdminPermission.INBOX_READ.value,
     },
+    # Regional admins are intentionally narrow: view orders in their own
+    # region(s), manage coupons in their own region(s), edit product prices
+    # in their own region(s) only. No content/settings/media/inbox/admin
+    # access, and no full products:write (see admin_catalog.py's
+    # require_any_scope(products:write, products:price_write) split).
     AdminRole.REGIONAL_ADMIN.value: {
         AdminPermission.ORDERS_READ.value,
-        AdminPermission.INBOX_READ.value,
+        AdminPermission.PRODUCTS_READ.value,
+        AdminPermission.PRODUCTS_PRICE_WRITE.value,
+        AdminPermission.COUPONS_READ.value,
+        AdminPermission.COUPONS_WRITE.value,
     },
 }
 

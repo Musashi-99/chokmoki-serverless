@@ -31,7 +31,7 @@ try:
     from src.plugins.admin_deps import require_admin
     from src.plugins.admin_audit_middleware import AdminAuditMiddleware
     from src.plugins.admin_cookies import set_auth_cookies, clear_auth_cookies
-    from src.security.abac import require_scope, require_scope_email
+    from src.security.abac import require_any_scope, require_scope, require_scope_email
     from src.services.admin_user_service import (
         AdminUserError,
         AdminUserService,
@@ -139,6 +139,7 @@ except Exception as e:
     set_auth_cookies = None
     clear_auth_cookies = None
     require_scope = None
+    require_any_scope = None
     require_scope_email = None
     AdminUserService = None
     AdminUserError = None

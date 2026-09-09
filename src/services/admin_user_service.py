@@ -20,7 +20,7 @@ from bson.errors import InvalidId
 from src.config import settings
 from src.database.connection import db
 from src.database.redis_connection import redis_client
-from src.models.admin_rbac import AdminRole
+from src.models.admin_rbac import AdminPermission, AdminRole
 from src.models.region import is_valid_region, normalize_region_codes
 from src.security.login_lockout import LoginLockoutService
 from src.security.secret_encryption import decrypt_totp_secret, encrypt_totp_secret
@@ -321,6 +321,31 @@ class AdminUserService:
             {"_id": doc["_id"]}, {"$set": {"regions": normalized, "updated_at": now}}
         )
         doc["regions"] = normalized
+        return doc
+
+    async def set_scopes(self, admin_id: str, scopes: Optional[list[str]]) -> dict:
+        """Root-only scope (re)assignment — used by
+        scripts/set_admin_scopes.py to migrate already-invited admins onto a
+        new default scope set, and available for a future admin-panel "edit
+        scopes" action. Root's own scopes can't be set (always wildcard)."""
+        doc = await self.get_by_id(admin_id)
+        if not doc:
+            raise AdminUserError("Admin not found")
+        if doc.get("is_root"):
+            raise RootAccountImmutableError()
+
+        normalized = sorted({(s or "").strip() for s in (scopes or []) if (s or "").strip()})
+        known = {p.value for p in AdminPermission}
+        for scope in normalized:
+            if scope != "*" and scope not in known:
+                raise AdminUserError(f"Unknown scope: {scope}")
+
+        database = await db.get_database()
+        now = datetime.utcnow()
+        await database[COLLECTION_NAME].update_one(
+            {"_id": doc["_id"]}, {"$set": {"scopes": normalized, "updated_at": now}}
+        )
+        doc["scopes"] = normalized
         return doc
 
     async def touch_last_login(self, email: str) -> None:

@@ -3,10 +3,52 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from typing import Any, Dict, List, Optional
 import json
-from api.bootstrap import CategoryService, JewelryCategoryCreate, JewelryCategoryUpdate, JewelryProductCreate, JewelryProductUpdate, ProductService, build_update_payload, cache, require_admin, require_update_fields, require_scope_email
+from api.bootstrap import AdminPrincipal, CategoryService, JewelryCategoryCreate, JewelryCategoryUpdate, JewelryProductCreate, JewelryProductUpdate, ProductService, build_update_payload, cache, require_admin, require_update_fields, require_any_scope, require_scope_email
 from api.json_utils import JSONEncoder
+from src.models.region import normalize_region_codes
+from src.security.abac import is_allowed
 
 router = APIRouter()
+
+# `price_inr` is always in the allow-list alongside `prices` even though
+# it's not something a price-only admin should independently control: it's
+# deterministically auto-derived by JewelryProductUpdate._sync_legacy_inr
+# from the `prices` list's IN row, so Pydantic marks it "set" and it lands
+# in update_data on ANY prices edit that includes an IN row — even one that
+# leaves IN completely unchanged. The real gate is the per-row loop below,
+# which independently checks the IN row's actual old-vs-new values against
+# the admin's allowed countries; price_inr can never diverge from that.
+_PRICE_ONLY_ALLOWED_FIELDS = {"prices", "price_inr"}
+
+
+def _assert_price_only_edit(principal: AdminPrincipal, existing: Any, update_data: Dict[str, Any]) -> None:
+    """A products:price_write-only admin (no full products:write) may submit
+    ONLY the `prices` list, and within it may only change rows whose country
+    is one of their assigned region(s); every other row must be resubmitted
+    identical to its current value. Enforced server-side regardless of what
+    the UI sends — a real security boundary, not a UI courtesy."""
+    extra_fields = set(update_data.keys()) - _PRICE_ONLY_ALLOWED_FIELDS
+    if extra_fields:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Your access only allows editing prices; cannot change: {sorted(extra_fields)}",
+        )
+    if "prices" not in update_data:
+        raise HTTPException(status_code=403, detail="No price fields to update")
+
+    allowed_countries = set(normalize_region_codes(list(principal.regions))) if principal.regions else set()
+    existing_by_country = {p.country: p for p in (existing.prices if existing else [])}
+    for row in update_data["prices"]:
+        country = row["country"] if isinstance(row, dict) else row.country
+        new_selling = row["sellingPrice"] if isinstance(row, dict) else row.sellingPrice
+        new_mrp = row["mrp"] if isinstance(row, dict) else row.mrp
+        old = existing_by_country.get(country)
+        changed = old is None or old.sellingPrice != new_selling or old.mrp != new_mrp
+        if changed and country not in allowed_countries:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your access does not allow editing the '{country}' price",
+            )
 
 
 @router.get("/api/admin/products")
@@ -83,9 +125,13 @@ async def admin_get_product(product_id: str, email: str = Depends(require_scope_
 
 @router.put("/api/admin/products/{product_id}")
 async def admin_update_product(
-    product_id: str, payload: Dict[str, Any], email: str = Depends(require_scope_email("products", "write"))
+    product_id: str,
+    payload: Dict[str, Any],
+    principal: AdminPrincipal = Depends(require_any_scope(("products", "write"), ("products", "price_write"))),
 ):
-    """Update a product by its MongoDB id."""
+    """Update a product by its MongoDB id. Admins with only products:price_write
+    (not full products:write) may change the `prices` array only, and only
+    rows for their own assigned region(s) — see _assert_price_only_edit."""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
@@ -94,7 +140,12 @@ async def admin_update_product(
     try:
         update_data = build_update_payload(JewelryProductUpdate, payload)
         require_update_fields(update_data)
+        has_full_write = is_allowed(principal, "products", "write")
+        if not has_full_write:
+            _assert_price_only_edit(principal, existing, update_data)
         updated = await service.update(product_id, update_data)
+    except HTTPException:
+        raise
     except ValueError as e:
         if "already exists" in str(e):
             raise HTTPException(status_code=409, detail=str(e))

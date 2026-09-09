@@ -80,6 +80,10 @@ class SetRegionsRequest(BaseModel):
     regions: List[str] = []
 
 
+class SetScopesRequest(BaseModel):
+    scopes: List[str] = []
+
+
 @router.get("/api/admin/regions")
 async def list_regions(principal: AdminPrincipal = Depends(require_scope("admins", "read"))):
     """Available region codes for the invite form's select box — single
@@ -200,6 +204,27 @@ async def set_admin_regions(
         raise HTTPException(status_code=400, detail=str(exc))
 
     await _notify(principal.email, "set_regions", {"target_email": doc["email"], "regions": doc["regions"]})
+    return AdminUserPublic.from_doc(doc)
+
+
+@router.put("/api/admin/admins/{admin_id}/scopes")
+async def set_admin_scopes(
+    admin_id: str,
+    payload: SetScopesRequest,
+    principal: AdminPrincipal = Depends(require_scope("admins", "write")),
+):
+    """Root-only scope reassignment — e.g. migrating an already-invited
+    admin onto a new default scope set after the permission taxonomy
+    changes (see scripts/set_admin_scopes.py for the bulk-migration CLI)."""
+    service = _service()
+    try:
+        doc = await service.set_scopes(admin_id, payload.scopes)
+    except RootAccountImmutableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except AdminUserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await _notify(principal.email, "set_scopes", {"target_email": doc["email"], "scopes": doc["scopes"]})
     return AdminUserPublic.from_doc(doc)
 
 

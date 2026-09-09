@@ -143,6 +143,31 @@ def require_scope(resource: str, action: str) -> Callable:
     return _dependency
 
 
+def require_any_scope(*pairs: tuple[str, str]) -> Callable:
+    """Like require_scope, but passes if the principal satisfies ANY of the
+    given (resource, action) pairs — used where two different permissions
+    grant overlapping-but-distinct access to the same route (e.g. full
+    products:write vs price-only products:price_write on the same product
+    update endpoint)."""
+
+    async def _dependency(
+        request: Request,
+        principal: AdminPrincipal = Depends(resolve_admin_principal),
+    ) -> AdminPrincipal:
+        if settings.csrf_enabled and getattr(request.state, "admin_auth_via_cookie", False):
+            await _enforce_csrf(request)
+        if not any(is_allowed(principal, r, a) for r, a in pairs):
+            raise HTTPException(
+                status_code=403,
+                detail="Missing scope: " + " or ".join(f"{r}:{a}" for r, a in pairs),
+            )
+        request.state.admin_email = principal.email
+        request.state.admin_principal = principal
+        return principal
+
+    return _dependency
+
+
 def require_scope_email(resource: str, action: str) -> Callable:
     """Same enforcement as require_scope, but yields just `principal.email`
     (a str) — a drop-in replacement for the existing `email: str =
