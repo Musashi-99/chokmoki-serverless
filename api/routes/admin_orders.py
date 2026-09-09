@@ -55,14 +55,27 @@ def _enforce_order_region(principal: AdminPrincipal, order: Any) -> None:
         raise HTTPException(status_code=404, detail="Order not found")
 
 
-def _region_filter(principal: AdminPrincipal) -> Optional[List[str]]:
+def _region_filter(
+    principal: AdminPrincipal, requested_country: Optional[str] = None
+) -> Optional[List[str]]:
     """What to force the order list/stats query to for a region-scoped
     admin — None means "no forced filter" (root, or an admin with no
     regions assigned). Always a list (even a single region), consumed as an
-    $in filter by OrderService.list()/count()."""
+    $in filter by OrderService.list()/count().
+
+    `requested_country` (the client's own Region filter selection) narrows
+    the result to just that one region WHEN it's one the admin already
+    holds — an admin covering IN+AU can filter down to AU-only. A country
+    outside their regions is ignored (can't widen), falling back to their
+    full region set, same as if nothing were requested."""
     if not principal.regions or principal.is_root:
         return None
-    return normalize_region_codes(list(principal.regions))
+    allowed = normalize_region_codes(list(principal.regions))
+    if requested_country:
+        narrowed = normalize_region_code(requested_country) or requested_country.strip().lower()
+        if narrowed in allowed:
+            return [narrowed]
+    return allowed
 
 
 @router.get("/api/admin/orders")
@@ -81,9 +94,14 @@ async def admin_list_orders(
     if OrderService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
-    # A region-scoped admin can never widen this via the query param — the
-    # forced $in filter always wins, the client-supplied `country` is ignored.
-    forced_regions = _region_filter(principal)
+    # A region-scoped admin can never widen this via the query param, but
+    # they CAN narrow it to one of their own regions (e.g. IN+AU admin
+    # filtering down to just AU) — _region_filter folds a valid selection
+    # into forced_regions; an invalid one is ignored and falls back to
+    # their full region set. Either way `country` itself is nulled below
+    # since OrderService.list/count()'s `countries` param takes precedence
+    # over `country` when both are given (see order_service.py).
+    forced_regions = _region_filter(principal, country)
     if forced_regions:
         country = None
 
