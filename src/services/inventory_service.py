@@ -32,6 +32,21 @@ from src.models.order import ValidatedOrderItem
 from src.models.product import MarketStock
 from src.pricing.stock_lookup import resolve_stock
 from src.plugins.logger import logger
+from src.services.stock_alerts import STOCK_EVENT_OUT_OF_STOCK, evaluate_stock_crossing
+
+# Optional alerts import — same defensive pattern as product_service.py,
+# so this file degrades gracefully (no alert, no crash) if src.alerts isn't
+# importable in some context.
+try:
+    from src.alerts.events import (
+        EVENT_PRODUCT_LOW_STOCK,
+        EVENT_PRODUCT_OUT_OF_STOCK,
+        publish_alert,
+    )
+except ImportError:
+    EVENT_PRODUCT_LOW_STOCK = "product.low_stock"
+    EVENT_PRODUCT_OUT_OF_STOCK = "product.out_of_stock"
+    publish_alert = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +195,27 @@ class InventoryService:
             {"$set": {"stock.$[elem].status": status}},
             array_filters=[{"elem.country": bucket}],
         )
+
+        # Stock-level Telegram alert — the ONLY mutation this decrement
+        # made was `-quantity`, so the pre-decrement qty is always exactly
+        # `remaining + quantity`; no extra read needed.
+        if remaining is not None and publish_alert:
+            old_qty = remaining + quantity
+            crossing = evaluate_stock_crossing(old_qty, remaining, settings.low_stock_threshold)
+            if crossing:
+                event_type = (
+                    EVENT_PRODUCT_OUT_OF_STOCK
+                    if crossing == STOCK_EVENT_OUT_OF_STOCK
+                    else EVENT_PRODUCT_LOW_STOCK
+                )
+                await publish_alert(event_type, {
+                    "product_id": str(updated.get("_id")) if updated.get("_id") else product_id,
+                    "product_name": updated.get("name"),
+                    "country": bucket,
+                    "qty": remaining,
+                    "threshold": settings.low_stock_threshold,
+                })
+
         return True
 
     async def _sync_availability_status(self, product_id: str, bucket: str) -> None:

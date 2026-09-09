@@ -10,6 +10,11 @@ ALERTS_STREAM_KEY = "chokmoki:alerts:stream"
 EVENT_ORDER_CREATED = "order.created"
 EVENT_ADMIN_MUTATION = "admin.mutation"
 EVENT_PRODUCT_PRICE_CHANGED = "product.price_changed"
+# Fired by src/services/stock_alerts.py's evaluate_stock_crossing() — from
+# both a real purchase decrementing stock (inventory_service.py) and an
+# admin's manual stock edit (product_service.py) crossing the same rule.
+EVENT_PRODUCT_OUT_OF_STOCK = "product.out_of_stock"
+EVENT_PRODUCT_LOW_STOCK = "product.low_stock"
 EVENT_CONTACT_SUBMITTED = "contact.submitted"
 EVENT_NEWSLETTER_SUBSCRIBED = "newsletter.subscribed"
 EVENT_SHIPMENT_UPDATE = "shipment.updated"

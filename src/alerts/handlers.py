@@ -9,6 +9,8 @@ from src.alerts.events import (
     EVENT_CONTACT_SUBMITTED,
     EVENT_NEWSLETTER_SUBSCRIBED,
     EVENT_ORDER_CREATED,
+    EVENT_PRODUCT_LOW_STOCK,
+    EVENT_PRODUCT_OUT_OF_STOCK,
     EVENT_PRODUCT_PRICE_CHANGED,
     EVENT_SHIPMENT_UPDATE,
     EVENT_SYSTEM_ERROR,
@@ -147,9 +149,22 @@ def _format_price_changed_alert(payload: Dict[str, Any]) -> str:
     if price_changes:
         lines.append("Prices:")
         for change in price_changes:
+            old_mrp = _format_price_label(change["old"].get("mrp"))
+            new_mrp = _format_price_label(change["new"].get("mrp"))
             old_selling = _format_price_label(change["old"].get("sellingPrice"))
             new_selling = _format_price_label(change["new"].get("sellingPrice"))
-            lines.append(f"  {change['country']}: {old_selling} → {new_selling}")
+            parts = []
+            if old_mrp != new_mrp:
+                parts.append(f"MRP {old_mrp} → {new_mrp}")
+            if old_selling != new_selling:
+                parts.append(f"Selling {old_selling} → {new_selling}")
+            if not parts:
+                # Row was diffed as "changed" but neither displayed value
+                # moved (shouldn't happen given _diff_market_rows only
+                # includes rows where mrp/sellingPrice actually differ, but
+                # stay explicit rather than print a blank line).
+                parts.append(f"MRP {old_mrp}, Selling {old_selling}")
+            lines.append(f"  {change['country']}: " + ", ".join(parts))
     if stock_changes:
         lines.append("Stock:")
         for change in stock_changes:
@@ -376,6 +391,45 @@ class PriceChangedHandler(AlertHandler):
         return True
 
 
+def _format_stock_level_alert(event_type: str, payload: Dict[str, Any]) -> str:
+    """Out-of-stock / low-stock crossing alert — fired once per crossing by
+    src/services/stock_alerts.py's evaluate_stock_crossing(), from either a
+    real purchase (src/services/inventory_service.py) or an admin's manual
+    stock edit (src/services/product_service.py, which sets actor_email)."""
+    name = payload.get("product_name", "product")
+    country = payload.get("country", "")
+    qty = payload.get("qty")
+    actor = payload.get("actor_email")
+
+    if event_type == EVENT_PRODUCT_OUT_OF_STOCK:
+        lines = ["🔴 *Out of Stock*", name, f"{country}: 0 remaining"]
+    else:
+        threshold = payload.get("threshold")
+        lines = ["🟡 *Low Stock*", name, f"{country}: {qty} remaining (threshold {threshold})"]
+
+    if actor:
+        lines.append(f"By: {actor}")
+    return "\n".join(lines)
+
+
+class StockLevelHandler(AlertHandler):
+    def __init__(self, channel: NotificationChannel) -> None:
+        super().__init__()
+        self._channel = channel
+
+    async def _can_handle(self, event: AlertEvent) -> bool:
+        return event.type in (EVENT_PRODUCT_OUT_OF_STOCK, EVENT_PRODUCT_LOW_STOCK)
+
+    async def _process(self, event: AlertEvent) -> bool:
+        await _send_to_channel(
+            self._channel,
+            _format_stock_level_alert(event.type, event.payload),
+            "Stock-level alert",
+            actor_email=event.payload.get("actor_email"),
+        )
+        return True
+
+
 class ContactSubmittedHandler(AlertHandler):
     def __init__(self, channel: NotificationChannel) -> None:
         super().__init__()
@@ -485,6 +539,7 @@ class FallbackHandler(AlertHandler):
 def build_chain(channel: NotificationChannel, sms_channel: Optional[SmsChannel] = None) -> AlertHandler:
     order_handler = OrderCreatedHandler(channel, sms_channel)
     price_handler = PriceChangedHandler(channel)
+    stock_handler = StockLevelHandler(channel)
     contact_handler = ContactSubmittedHandler(channel)
     newsletter_handler = NewsletterSubscribedHandler(channel)
     shipment_handler = ShipmentUpdateHandler(channel, sms_channel)
@@ -494,6 +549,7 @@ def build_chain(channel: NotificationChannel, sms_channel: Optional[SmsChannel] 
 
     (
         order_handler.set_next(price_handler)
+        .set_next(stock_handler)
         .set_next(contact_handler)
         .set_next(newsletter_handler)
         .set_next(shipment_handler)

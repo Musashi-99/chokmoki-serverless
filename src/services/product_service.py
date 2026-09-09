@@ -1,17 +1,26 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from bson import ObjectId
+from src.config import settings
 from src.database.connection import db
 from src.models.product import JewelryProduct, JewelryProductCreate
 from src.plugins.logger import logger
 from src.utils.regex_safe import escape_mongo_regex
 from src.services.product_filters import ids_mongo_filter, merge_mongo_filters
+from src.services.stock_alerts import STOCK_EVENT_OUT_OF_STOCK, evaluate_stock_crossing
 
 # Optional alerts import
 try:
-    from src.alerts.events import EVENT_PRODUCT_PRICE_CHANGED, publish_alert
+    from src.alerts.events import (
+        EVENT_PRODUCT_LOW_STOCK,
+        EVENT_PRODUCT_OUT_OF_STOCK,
+        EVENT_PRODUCT_PRICE_CHANGED,
+        publish_alert,
+    )
 except ImportError:
     EVENT_PRODUCT_PRICE_CHANGED = "product.price_changed"
+    EVENT_PRODUCT_LOW_STOCK = "product.low_stock"
+    EVENT_PRODUCT_OUT_OF_STOCK = "product.out_of_stock"
     publish_alert = None
 
 
@@ -316,6 +325,30 @@ class ProductService:
                     "price_changes": price_changes,
                     "stock_changes": stock_changes,
                     "field_changes": field_changes,
+                    "actor_email": actor_email,
+                })
+
+            # Same crossing rule a real purchase uses (src/services/
+            # inventory_service.py's _atomic_decrement) — an admin manually
+            # editing stock down through the threshold alerts identically,
+            # written once in evaluate_stock_crossing() and reused here.
+            for change in stock_changes:
+                crossing = evaluate_stock_crossing(
+                    change["old"].get("qty"), change["new"].get("qty"), settings.low_stock_threshold
+                )
+                if not crossing:
+                    continue
+                event_type = (
+                    EVENT_PRODUCT_OUT_OF_STOCK
+                    if crossing == STOCK_EVENT_OUT_OF_STOCK
+                    else EVENT_PRODUCT_LOW_STOCK
+                )
+                await publish_alert(event_type, {
+                    "product_id": str(updated.id) if getattr(updated, "id", None) else product_id,
+                    "product_name": updated.name,
+                    "country": change["country"],
+                    "qty": change["new"].get("qty"),
+                    "threshold": settings.low_stock_threshold,
                     "actor_email": actor_email,
                 })
 

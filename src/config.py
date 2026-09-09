@@ -338,6 +338,11 @@ class Settings(BaseSettings):
     )
     fraud_velocity_ip_threshold: int = Field(default=10, env="FRAUD_VELOCITY_IP_THRESHOLD")
 
+    # Stock-level Telegram alerts (src/services/stock_alerts.py) — a product's
+    # per-region qty crossing at/below this value fires a "low stock" alert
+    # (crossing to 0 fires "out of stock" instead, not in addition).
+    low_stock_threshold: int = Field(default=10, env="LOW_STOCK_THRESHOLD")
+
     # Multi-region pricing / GeoIP
     geoip_service_url: Optional[str] = Field(default=None, env="GEOIP_SERVICE_URL")
     geoip_lookup_timeout_seconds: float = Field(

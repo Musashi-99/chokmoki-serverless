@@ -75,6 +75,31 @@ async def seeded_product():
         await database[COLLECTION_NAME].delete_one({"_id": product.id})
 
 
+@pytest.fixture
+async def seeded_product_high_stock():
+    """AU starts well above the low-stock threshold (10), unlike
+    seeded_product's AU=5 (already-low) — needed to actually exercise a
+    crossing rather than a no-op."""
+    service = ProductService()
+    slug = _unique_slug()
+    data = JewelryProductCreate(
+        slug=slug, name="Alert Test Ring High Stock", price_inr=900, prices=_base_prices(),
+        category="rings", collection="Chokmoki", thumbnail="thumb.jpg",
+        gallery=["thumb.jpg"], sizes=[],
+        stock=[
+            MarketStock(country="IN", qty=50, status="in_stock"),
+            MarketStock(country="AU", qty=15, status="in_stock"),
+            MarketStock(country="default", qty=50, status="in_stock"),
+        ],
+    )
+    product = await service.create(data)
+    database = await db.get_database()
+    try:
+        yield product
+    finally:
+        await database[COLLECTION_NAME].delete_one({"_id": product.id})
+
+
 class TestDiffMarketRows:
     def test_no_rows_changed_returns_empty(self):
         rows = [{"country": "AU", "mrp": 100, "sellingPrice": 90}]
@@ -204,3 +229,101 @@ class TestProductServiceAlerts:
         mock_publish.assert_called_once()
         _, sent_payload = mock_publish.call_args[0]
         assert sent_payload["actor_email"] is None
+
+
+@pytest.mark.asyncio
+class TestAdminStockCrossingAlerts:
+    """Same crossing rule a real purchase uses (evaluate_stock_crossing),
+    reused for an admin's manual stock edit."""
+
+    async def test_admin_edit_crossing_low_stock_threshold_fires_alert(self, seeded_product_high_stock):
+        service = ProductService()
+        new_stock = [
+            {"country": "IN", "qty": 50, "status": "in_stock"},
+            {"country": "AU", "qty": 8, "status": "in_stock"},  # 15 -> 8, crosses threshold 10
+            {"country": "default", "qty": 50, "status": "in_stock"},
+        ]
+        with patch("src.services.product_service.publish_alert", new_callable=AsyncMock) as mock_publish:
+            await service.update(
+                str(seeded_product_high_stock.id), {"stock": new_stock}, actor_email="regional@chokmoki.com"
+            )
+        event_types = [call.args[0] for call in mock_publish.call_args_list]
+        assert "product.low_stock" in event_types
+        low_stock_call = next(c for c in mock_publish.call_args_list if c.args[0] == "product.low_stock")
+        payload = low_stock_call.args[1]
+        assert payload["qty"] == 8
+        assert payload["country"] == "AU"
+        assert payload["actor_email"] == "regional@chokmoki.com"
+
+    async def test_admin_edit_crossing_to_zero_fires_out_of_stock(self, seeded_product_high_stock):
+        service = ProductService()
+        new_stock = [
+            {"country": "IN", "qty": 50, "status": "in_stock"},
+            {"country": "AU", "qty": 0, "status": "out_of_stock"},
+            {"country": "default", "qty": 50, "status": "in_stock"},
+        ]
+        with patch("src.services.product_service.publish_alert", new_callable=AsyncMock) as mock_publish:
+            await service.update(
+                str(seeded_product_high_stock.id), {"stock": new_stock}, actor_email="root@chokmoki.com"
+            )
+        event_types = [call.args[0] for call in mock_publish.call_args_list]
+        assert "product.out_of_stock" in event_types
+        assert "product.low_stock" not in event_types
+
+    async def test_admin_restocking_above_threshold_fires_no_stock_level_alert(self, seeded_product_high_stock):
+        service = ProductService()
+        new_stock = [
+            {"country": "IN", "qty": 50, "status": "in_stock"},
+            {"country": "AU", "qty": 30, "status": "in_stock"},  # 15 -> 30, a restock
+            {"country": "default", "qty": 50, "status": "in_stock"},
+        ]
+        with patch("src.services.product_service.publish_alert", new_callable=AsyncMock) as mock_publish:
+            await service.update(
+                str(seeded_product_high_stock.id), {"stock": new_stock}, actor_email="root@chokmoki.com"
+            )
+        event_types = [call.args[0] for call in mock_publish.call_args_list]
+        assert "product.low_stock" not in event_types
+        assert "product.out_of_stock" not in event_types
+
+
+class TestFormatPriceChangedAlertShowsBothMrpAndSelling:
+    def test_mrp_only_change_renders_mrp_distinctly(self):
+        from src.alerts.handlers import _format_price_changed_alert
+
+        payload = {
+            "product_name": "Test Ring",
+            "price_changes": [
+                {"country": "AU", "old": {"mrp": 100, "sellingPrice": 90}, "new": {"mrp": 120, "sellingPrice": 90}}
+            ],
+        }
+        text = _format_price_changed_alert(payload)
+        assert "MRP" in text
+        assert "₹100" in text and "₹120" in text
+        # Selling price didn't change — must not claim it did.
+        assert "Selling" not in text
+
+    def test_selling_price_only_change_renders_selling_distinctly(self):
+        from src.alerts.handlers import _format_price_changed_alert
+
+        payload = {
+            "product_name": "Test Ring",
+            "price_changes": [
+                {"country": "AU", "old": {"mrp": 100, "sellingPrice": 90}, "new": {"mrp": 100, "sellingPrice": 95}}
+            ],
+        }
+        text = _format_price_changed_alert(payload)
+        assert "Selling" in text
+        assert "₹90" in text and "₹95" in text
+        assert "MRP" not in text
+
+    def test_both_mrp_and_selling_change_render_both(self):
+        from src.alerts.handlers import _format_price_changed_alert
+
+        payload = {
+            "product_name": "Test Ring",
+            "price_changes": [
+                {"country": "AU", "old": {"mrp": 100, "sellingPrice": 90}, "new": {"mrp": 110, "sellingPrice": 95}}
+            ],
+        }
+        text = _format_price_changed_alert(payload)
+        assert "MRP" in text and "Selling" in text
