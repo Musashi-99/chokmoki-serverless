@@ -121,15 +121,48 @@ def _format_price_label(value: Any) -> str:
 
 
 def _format_price_changed_alert(payload: Dict[str, Any]) -> str:
+    """Product-updated alert — "who changed what, in which region", for
+    ANY product edit (root's full edits and a regional admin's price/stock-
+    only edits alike). `price_changes`/`stock_changes` (per-country, see
+    ProductService._diff_market_rows) and `field_changes` (other fields,
+    see ProductService._diff_general_fields) are rendered as sections;
+    falls back to the single old_price/new_price (legacy) pair only when
+    none of the three are present, for any older caller that only set
+    those two."""
     name = payload.get("product_name", "product")
-    old_price = _format_price_label(payload.get("old_price"))
-    new_price = _format_price_label(payload.get("new_price"))
     actor = payload.get("actor_email")
-    lines = [
-        "💰 *Price Changed*",
-        name,
-        f"{old_price} → {new_price}",
-    ]
+    price_changes = payload.get("price_changes") or []
+    stock_changes = payload.get("stock_changes") or []
+    field_changes = payload.get("field_changes") or []
+
+    lines = ["✏️ *Product Updated*", name]
+
+    if field_changes:
+        lines.append("Changed:")
+        for change in field_changes:
+            if change.get("old") is not None or change.get("new") is not None:
+                lines.append(f"  {change['field']}: {change['old']} → {change['new']}")
+            else:
+                lines.append(f"  {change['field']} changed")
+    if price_changes:
+        lines.append("Prices:")
+        for change in price_changes:
+            old_selling = _format_price_label(change["old"].get("sellingPrice"))
+            new_selling = _format_price_label(change["new"].get("sellingPrice"))
+            lines.append(f"  {change['country']}: {old_selling} → {new_selling}")
+    if stock_changes:
+        lines.append("Stock:")
+        for change in stock_changes:
+            old_status, new_status = change["old"].get("status"), change["new"].get("status")
+            old_qty, new_qty = change["old"].get("qty"), change["new"].get("qty")
+            lines.append(
+                f"  {change['country']}: {old_status or 'unset'} ({old_qty}) → {new_status} ({new_qty})"
+            )
+    if not price_changes and not stock_changes and not field_changes:
+        old_price = _format_price_label(payload.get("old_price"))
+        new_price = _format_price_label(payload.get("new_price"))
+        lines.append(f"{old_price} → {new_price}")
+
     if actor:
         lines.append(f"By: {actor}")
     return "\n".join(lines)

@@ -18,37 +18,59 @@ router = APIRouter()
 # leaves IN completely unchanged. The real gate is the per-row loop below,
 # which independently checks the IN row's actual old-vs-new values against
 # the admin's allowed countries; price_inr can never diverge from that.
-_PRICE_ONLY_ALLOWED_FIELDS = {"prices", "price_inr"}
+#
+# `stock` is included too — a regional admin needs to mark their own
+# region's stock in/out, not just its price (this is the operational
+# reality of running a region: pricing without inventory control isn't
+# enough). Same per-row-country enforcement as `prices` below.
+_PRICE_ONLY_ALLOWED_FIELDS = {"prices", "price_inr", "stock"}
 
 
 def _assert_price_only_edit(principal: AdminPrincipal, existing: Any, update_data: Dict[str, Any]) -> None:
     """A products:price_write-only admin (no full products:write) may submit
-    ONLY the `prices` list, and within it may only change rows whose country
-    is one of their assigned region(s); every other row must be resubmitted
-    identical to its current value. Enforced server-side regardless of what
-    the UI sends — a real security boundary, not a UI courtesy."""
+    ONLY `prices`/`stock`, and within each may only change rows whose
+    country is one of their assigned region(s); every other row must be
+    resubmitted identical to its current value. Enforced server-side
+    regardless of what the UI sends — a real security boundary, not a UI
+    courtesy."""
     extra_fields = set(update_data.keys()) - _PRICE_ONLY_ALLOWED_FIELDS
     if extra_fields:
         raise HTTPException(
             status_code=403,
-            detail=f"Your access only allows editing prices; cannot change: {sorted(extra_fields)}",
+            detail=f"Your access only allows editing prices/stock; cannot change: {sorted(extra_fields)}",
         )
-    if "prices" not in update_data:
-        raise HTTPException(status_code=403, detail="No price fields to update")
+    if "prices" not in update_data and "stock" not in update_data:
+        raise HTTPException(status_code=403, detail="No price/stock fields to update")
 
     allowed_countries = set(normalize_region_codes(list(principal.regions))) if principal.regions else set()
-    existing_by_country = {p.country: p for p in (existing.prices if existing else [])}
-    for row in update_data["prices"]:
-        country = row["country"] if isinstance(row, dict) else row.country
-        new_selling = row["sellingPrice"] if isinstance(row, dict) else row.sellingPrice
-        new_mrp = row["mrp"] if isinstance(row, dict) else row.mrp
-        old = existing_by_country.get(country)
-        changed = old is None or old.sellingPrice != new_selling or old.mrp != new_mrp
-        if changed and country not in allowed_countries:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Your access does not allow editing the '{country}' price",
-            )
+
+    if "prices" in update_data:
+        existing_prices_by_country = {p.country: p for p in (existing.prices if existing else [])}
+        for row in update_data["prices"]:
+            country = row["country"] if isinstance(row, dict) else row.country
+            new_selling = row["sellingPrice"] if isinstance(row, dict) else row.sellingPrice
+            new_mrp = row["mrp"] if isinstance(row, dict) else row.mrp
+            old = existing_prices_by_country.get(country)
+            changed = old is None or old.sellingPrice != new_selling or old.mrp != new_mrp
+            if changed and country not in allowed_countries:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Your access does not allow editing the '{country}' price",
+                )
+
+    if "stock" in update_data:
+        existing_stock_by_country = {s.country: s for s in (existing.stock if existing else [])}
+        for row in update_data["stock"]:
+            country = row["country"] if isinstance(row, dict) else row.country
+            new_qty = row["qty"] if isinstance(row, dict) else row.qty
+            new_status = row["status"] if isinstance(row, dict) else row.status
+            old = existing_stock_by_country.get(country)
+            changed = old is None or old.qty != new_qty or old.status != new_status
+            if changed and country not in allowed_countries:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Your access does not allow editing the '{country}' stock",
+                )
 
 
 @router.get("/api/admin/products")
@@ -143,7 +165,7 @@ async def admin_update_product(
         has_full_write = is_allowed(principal, "products", "write")
         if not has_full_write:
             _assert_price_only_edit(principal, existing, update_data)
-        updated = await service.update(product_id, update_data)
+        updated = await service.update(product_id, update_data, actor_email=principal.email)
     except HTTPException:
         raise
     except ValueError as e:

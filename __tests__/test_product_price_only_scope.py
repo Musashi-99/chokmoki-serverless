@@ -111,17 +111,33 @@ class _Price:
         self.sellingPrice = sellingPrice
 
 
+class _Stock:
+    def __init__(self, country, qty, status):
+        self.country = country
+        self.qty = qty
+        self.status = status
+
+
 class _FakeProduct:
-    def __init__(self, slug="ring-1", prices=None):
+    def __init__(self, slug="ring-1", prices=None, stock=None):
         self.slug = slug
         self.prices = prices or [
             _Price("IN", "₹", "INR", 1000, 900),
             _Price("AU", "$", "AUD", 100, 90),
             _Price("default", "$", "USD", 50, 45),
         ]
+        self.stock = stock or [
+            _Stock("IN", 10, "in_stock"),
+            _Stock("AU", 5, "in_stock"),
+            _Stock("default", 8, "in_stock"),
+        ]
 
     def model_dump(self, by_alias=True):
-        return {"slug": self.slug, "prices": [vars(p) for p in self.prices]}
+        return {
+            "slug": self.slug,
+            "prices": [vars(p) for p in self.prices],
+            "stock": [vars(s) for s in self.stock],
+        }
 
 
 def _prices_payload(au_selling=95):
@@ -129,6 +145,14 @@ def _prices_payload(au_selling=95):
         {"country": "IN", "sym": "₹", "currency": "INR", "mrp": 1000, "sellingPrice": 900},
         {"country": "AU", "sym": "$", "currency": "AUD", "mrp": 100, "sellingPrice": au_selling},
         {"country": "default", "sym": "$", "currency": "USD", "mrp": 50, "sellingPrice": 45},
+    ]
+
+
+def _stock_payload(au_status="out_of_stock"):
+    return [
+        {"country": "IN", "qty": 10, "status": "in_stock"},
+        {"country": "AU", "qty": 5, "status": au_status},
+        {"country": "default", "qty": 8, "status": "in_stock"},
     ]
 
 
@@ -280,6 +304,78 @@ class TestProductPriceOnlyScope:
                 response = client.put(
                     "/api/admin/products/prod1",
                     json={"name": "New name", "prices": _prices_payload(au_selling=999)},
+                )
+        finally:
+            _clear_override(api_module)
+        assert response.status_code == 200
+
+    def test_price_only_admin_can_update_own_region_stock(self, api_module):
+        principal = _principal(regions=frozenset({"AU"}))
+        _override(api_module, principal)
+        try:
+            with patch(
+                "api.routes.admin_catalog.ProductService.get_by_id",
+                new_callable=AsyncMock,
+                return_value=_FakeProduct(),
+            ), patch(
+                "api.routes.admin_catalog.ProductService.update",
+                new_callable=AsyncMock,
+                return_value=_FakeProduct(stock=[
+                    _Stock("IN", 10, "in_stock"),
+                    _Stock("AU", 5, "out_of_stock"),
+                    _Stock("default", 8, "in_stock"),
+                ]),
+            ):
+                client = TestClient(api_module.app, raise_server_exceptions=True)
+                response = client.put(
+                    "/api/admin/products/prod1",
+                    json={"stock": _stock_payload(au_status="out_of_stock")},
+                )
+        finally:
+            _clear_override(api_module)
+        assert response.status_code == 200
+
+    def test_price_only_admin_cannot_change_other_region_stock(self, api_module):
+        principal = _principal(regions=frozenset({"AU"}))
+        _override(api_module, principal)
+        try:
+            with patch(
+                "api.routes.admin_catalog.ProductService.get_by_id",
+                new_callable=AsyncMock,
+                return_value=_FakeProduct(),
+            ), patch(
+                "api.routes.admin_catalog.ProductService.update",
+                new_callable=AsyncMock,
+            ):
+                client = TestClient(api_module.app, raise_server_exceptions=True)
+                payload = _stock_payload()
+                payload[0]["status"] = "out_of_stock"  # IN row changed
+                response = client.put("/api/admin/products/prod1", json={"stock": payload})
+        finally:
+            _clear_override(api_module)
+        assert response.status_code == 403
+        assert "IN" in response.json()["detail"]
+
+    def test_price_only_admin_can_submit_prices_and_stock_together(self, api_module):
+        principal = _principal(regions=frozenset({"AU"}))
+        _override(api_module, principal)
+        try:
+            with patch(
+                "api.routes.admin_catalog.ProductService.get_by_id",
+                new_callable=AsyncMock,
+                return_value=_FakeProduct(),
+            ), patch(
+                "api.routes.admin_catalog.ProductService.update",
+                new_callable=AsyncMock,
+                return_value=_FakeProduct(),
+            ):
+                client = TestClient(api_module.app, raise_server_exceptions=True)
+                response = client.put(
+                    "/api/admin/products/prod1",
+                    json={
+                        "prices": _prices_payload(au_selling=99),
+                        "stock": _stock_payload(au_status="out_of_stock"),
+                    },
                 )
         finally:
             _clear_override(api_module)

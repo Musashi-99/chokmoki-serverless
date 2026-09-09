@@ -15,6 +15,64 @@ except ImportError:
     publish_alert = None
 
 
+def _diff_market_rows(
+    before_rows: List[Dict[str, Any]], after_rows: List[Dict[str, Any]], fields: tuple
+) -> List[Dict[str, Any]]:
+    """Per-country diff of MarketPrice/MarketStock rows — used to build the
+    "who changed what, in which region" Telegram alert. Returns one entry
+    per country whose tracked `fields` actually differ (a country present
+    only in `after` counts as changed from None)."""
+    before_by_country = {row.get("country"): row for row in before_rows}
+    changes: List[Dict[str, Any]] = []
+    for row in after_rows:
+        country = row.get("country")
+        old_row = before_by_country.get(country)
+        old_values = {f: (old_row.get(f) if old_row else None) for f in fields}
+        new_values = {f: row.get(f) for f in fields}
+        if old_values != new_values:
+            changes.append({"country": country, "old": old_values, "new": new_values})
+    return changes
+
+
+# Fields diffed as simple scalar changes in the "Product Updated" alert —
+# everything else in an update payload (prices/stock get their own richer
+# per-country diff; slug/category etc. are simple enough to show as-is;
+# long free-text fields are truncated so the alert stays readable).
+_GENERAL_DIFF_FIELDS = {
+    "name", "slug", "category", "collection", "active", "is_best_seller", "is_curated",
+    "best_seller_order", "curated_order", "purity", "material",
+}
+_TRUNCATE_LEN = 60
+
+
+def _format_scalar(value: Any) -> str:
+    text = str(value)
+    return text if len(text) <= _TRUNCATE_LEN else text[:_TRUNCATE_LEN] + "…"
+
+
+def _diff_general_fields(before: Dict[str, Any], payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Everything in `payload` other than prices/stock/price_inr (those get
+    their own per-country diff). Scalar fields show old→new; anything else
+    (gallery, sizes, long text fields) just reports "changed" so the alert
+    stays short and doesn't leak/duplicate large content into Telegram."""
+    changes: List[Dict[str, Any]] = []
+    for field, new_value in payload.items():
+        if field in {"prices", "stock", "price_inr"}:
+            continue
+        old_value = before.get(field)
+        if old_value == new_value:
+            continue
+        if field in _GENERAL_DIFF_FIELDS:
+            changes.append({
+                "field": field,
+                "old": _format_scalar(old_value),
+                "new": _format_scalar(new_value),
+            })
+        else:
+            changes.append({"field": field, "old": None, "new": None})
+    return changes
+
+
 class ProductService:
     COLLECTION_NAME = "products"
 
@@ -190,7 +248,9 @@ class ProductService:
         )
         return await collection.count_documents(query)
     
-    async def update(self, product_id: str, update_data: Dict[str, Any]) -> Optional[JewelryProduct]:
+    async def update(
+        self, product_id: str, update_data: Dict[str, Any], actor_email: Optional[str] = None
+    ) -> Optional[JewelryProduct]:
         collection = await self._collection()
         product_filter = await self._resolve_filter(product_id)
         if not product_filter:
@@ -212,7 +272,15 @@ class ProductService:
             if existing:
                 raise ValueError(f"Product with slug '{payload['slug']}' already exists")
 
-        before = await collection.find_one(product_filter) if "price_inr" in payload else None
+        # Always snapshot before the write so ANY change — price, stock, or
+        # any other field (name/category/images/description/active/...) —
+        # can be diffed and alerted on below, for both root's full edits and
+        # a regional admin's price/stock-only edits. Previously this only
+        # fetched a before-snapshot (and only ever alerted at all) when
+        # `price_inr` itself was in the payload, which even for pure price
+        # edits only happens when the edit includes the IN row — so most
+        # edits, by anyone, produced no Telegram alert whatsoever.
+        before = await collection.find_one(product_filter)
 
         result = await collection.update_one(product_filter, {"$set": payload})
 
@@ -221,15 +289,34 @@ class ProductService:
         saved = await collection.find_one(product_filter)
         updated = JewelryProduct(**saved) if saved else None
 
-        if updated and before is not None:
-            old_price = before.get("price_inr")
-            new_price = updated.price_inr
-            if old_price != new_price and publish_alert:
+        if updated and before is not None and publish_alert:
+            price_changes = (
+                _diff_market_rows(
+                    before.get("prices") or [], [p.model_dump() for p in updated.prices],
+                    fields=("mrp", "sellingPrice"),
+                )
+                if "prices" in payload else []
+            )
+            stock_changes = (
+                _diff_market_rows(
+                    before.get("stock") or [], [s.model_dump() for s in updated.stock],
+                    fields=("qty", "status"),
+                )
+                if "stock" in payload else []
+            )
+            field_changes = _diff_general_fields(before, payload)
+            old_price, new_price = before.get("price_inr"), updated.price_inr
+            price_inr_changed = "price_inr" in payload and old_price != new_price
+            if price_changes or stock_changes or field_changes or price_inr_changed:
                 await publish_alert(EVENT_PRODUCT_PRICE_CHANGED, {
                     "product_id": str(updated.id) if getattr(updated, "id", None) else product_id,
                     "product_name": updated.name,
                     "old_price": old_price,
                     "new_price": new_price,
+                    "price_changes": price_changes,
+                    "stock_changes": stock_changes,
+                    "field_changes": field_changes,
+                    "actor_email": actor_email,
                 })
 
         return updated
