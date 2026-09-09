@@ -327,3 +327,93 @@ class TestFormatPriceChangedAlertShowsBothMrpAndSelling:
         }
         text = _format_price_changed_alert(payload)
         assert "MRP" in text and "Selling" in text
+
+
+class TestMarkdownEscaping:
+    """Regression tests for the production DLQ incident: a product name /
+    material / category / actor-email containing an unescaped Telegram
+    legacy-Markdown special character (_ * ` [) made send_message fail
+    with "Can't parse entities", and after 5 retries the event was dropped
+    to the DLQ. It also silently corrupted the SystemErrorHandler's own
+    alert about that failure (an unescaped underscore inside its `_{...}_`
+    italics ate the "_" out of "product.price_changed")."""
+
+    def test_escape_markdown_escapes_all_special_chars(self):
+        from src.alerts.handlers import _escape_markdown
+
+        assert _escape_markdown("18k_Gold Ring") == "18k\\_Gold Ring"
+        assert _escape_markdown("Extra *Shiny* Ring") == "Extra \\*Shiny\\* Ring"
+        assert _escape_markdown("Ring `special`") == "Ring \\`special\\`"
+        assert _escape_markdown("Ring [SALE]") == "Ring \\[SALE]"
+        assert _escape_markdown("back\\slash") == "back\\\\slash"
+
+    def test_price_changed_alert_escapes_product_name_with_underscore(self):
+        from src.alerts.handlers import _format_price_changed_alert
+
+        payload = {
+            "product_name": "18k_Gold Statement Ring",
+            "price_changes": [
+                {"country": "AU", "old": {"mrp": 100, "sellingPrice": 90}, "new": {"mrp": 100, "sellingPrice": 95}}
+            ],
+        }
+        text = _format_price_changed_alert(payload)
+        assert "18k\\_Gold Statement Ring" in text
+        # Confirms the raw unescaped underscore never appears bare — the
+        # exact condition that broke Telegram's parser in production.
+        assert "18k_Gold" not in text
+
+    def test_price_changed_alert_escapes_field_change_values(self):
+        from src.alerts.handlers import _format_price_changed_alert
+
+        payload = {
+            "product_name": "Test Ring",
+            "field_changes": [{"field": "material", "old": "925 Silver", "new": "18k_Gold Plated"}],
+        }
+        text = _format_price_changed_alert(payload)
+        assert "18k\\_Gold Plated" in text
+
+    def test_price_changed_alert_escapes_actor_email(self):
+        from src.alerts.handlers import _format_price_changed_alert
+
+        payload = {
+            "product_name": "Test Ring",
+            "actor_email": "first_last@chokmoki.com",
+            "field_changes": [{"field": "active", "old": "True", "new": "False"}],
+        }
+        text = _format_price_changed_alert(payload)
+        assert "first\\_last@chokmoki.com" in text
+
+    def test_system_error_alert_escapes_context_values(self):
+        """The exact incident: a system-error alert ABOUT the price-changed
+        failure carried the event type 'product.price_changed' inside its
+        own unescaped `_{context}_` italics, silently eating the
+        underscore (rendered as 'product.pricechanged' in Telegram)."""
+        from src.alerts.handlers import _format_system_error_alert
+
+        payload = {
+            "component": "stream_consumer",
+            "message": "Event dropped after 5 failed attempts",
+            "context": {"eventtype": "product.price_changed", "deliverycount": 5},
+        }
+        text = _format_system_error_alert(payload)
+        assert "product.price\\_changed" in text
+        assert "product.pricechanged" not in text
+
+    def test_stock_level_alert_escapes_product_name(self):
+        from src.alerts.handlers import _format_stock_level_alert
+
+        text = _format_stock_level_alert(
+            "product.low_stock",
+            {"product_name": "18k_Gold Ring", "country": "AU", "qty": 5, "threshold": 10},
+        )
+        assert "18k\\_Gold Ring" in text
+
+    def test_contact_alert_escapes_free_text_message(self):
+        from src.alerts.handlers import _format_contact_alert
+
+        payload = {"name": "A_B", "email": "a_b@example.com", "message": "Interested in *this* ring_set"}
+        text = _format_contact_alert(payload)
+        assert "A\\_B" in text
+        assert "a\\_b@example.com" in text
+        assert "\\*this\\*" in text
+        assert "ring\\_set" in text
