@@ -32,20 +32,15 @@ from src.models.order import ValidatedOrderItem
 from src.models.product import MarketStock
 from src.pricing.stock_lookup import resolve_stock
 from src.plugins.logger import logger
-from src.services.stock_alerts import STOCK_EVENT_OUT_OF_STOCK, evaluate_stock_crossing
+from src.services.stock_alerts import evaluate_stock_crossing
 
 # Optional alerts import — same defensive pattern as product_service.py,
 # so this file degrades gracefully (no alert, no crash) if src.alerts isn't
 # importable in some context.
 try:
-    from src.alerts.events import (
-        EVENT_PRODUCT_LOW_STOCK,
-        EVENT_PRODUCT_OUT_OF_STOCK,
-        publish_alert,
-    )
+    from src.alerts.events import event_type_for_stock_crossing, publish_alert
 except ImportError:
-    EVENT_PRODUCT_LOW_STOCK = "product.low_stock"
-    EVENT_PRODUCT_OUT_OF_STOCK = "product.out_of_stock"
+    event_type_for_stock_crossing = None
     publish_alert = None
 
 
@@ -201,13 +196,12 @@ class InventoryService:
         # `remaining + quantity`; no extra read needed.
         if remaining is not None and publish_alert:
             old_qty = remaining + quantity
-            crossing = evaluate_stock_crossing(old_qty, remaining, settings.low_stock_threshold)
+            old_status = "out_of_stock" if old_qty <= 0 else "in_stock"
+            crossing = evaluate_stock_crossing(
+                old_qty, remaining, settings.low_stock_threshold, old_status, status
+            )
             if crossing:
-                event_type = (
-                    EVENT_PRODUCT_OUT_OF_STOCK
-                    if crossing == STOCK_EVENT_OUT_OF_STOCK
-                    else EVENT_PRODUCT_LOW_STOCK
-                )
+                event_type = event_type_for_stock_crossing(crossing)
                 await publish_alert(event_type, {
                     "product_id": str(updated.get("_id")) if updated.get("_id") else product_id,
                     "product_name": updated.get("name"),

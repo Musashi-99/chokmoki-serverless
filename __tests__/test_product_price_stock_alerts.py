@@ -185,9 +185,15 @@ class TestProductServiceAlerts:
         with patch("src.services.product_service.publish_alert", new_callable=AsyncMock) as mock_publish:
             await service.update(str(seeded_product.id), payload, actor_email="regional@chokmoki.com")
 
-        mock_publish.assert_called_once()
-        event_type, payload = mock_publish.call_args[0]
-        assert event_type == "product.price_changed"
+        # Two alerts now: the general "Product Updated" summary, AND a
+        # dedicated out-of-stock alert (status-driven crossing — qty stayed
+        # 5, only status flipped in_stock -> out_of_stock).
+        event_types = [call.args[0] for call in mock_publish.call_args_list]
+        assert "product.price_changed" in event_types
+        assert "product.out_of_stock" in event_types
+
+        summary_call = next(c for c in mock_publish.call_args_list if c.args[0] == "product.price_changed")
+        payload = summary_call.args[1]
         assert payload["actor_email"] == "regional@chokmoki.com"
         assert payload["price_changes"] == []
         assert len(payload["stock_changes"]) == 1
@@ -329,25 +335,24 @@ class TestFormatPriceChangedAlertShowsBothMrpAndSelling:
         assert "MRP" in text and "Selling" in text
 
 
-class TestMarkdownEscaping:
-    """Regression tests for the production DLQ incident: a product name /
-    material / category / actor-email containing an unescaped Telegram
-    legacy-Markdown special character (_ * ` [) made send_message fail
-    with "Can't parse entities", and after 5 retries the event was dropped
-    to the DLQ. It also silently corrupted the SystemErrorHandler's own
-    alert about that failure (an unescaped underscore inside its `_{...}_`
-    italics ate the "_" out of "product.price_changed")."""
+class TestPlainTextNeverBreaksOnSpecialCharacters:
+    """Regression tests for a real production incident: Telegram messages
+    were sent with parse_mode="Markdown", and dynamic content containing an
+    unescaped/unbalanced markdown special character (_ * ` [) made
+    send_message fail with "Can't parse entities" — after 5 stream-consumer
+    retries the event was dropped to the DLQ. Manual per-field escaping was
+    tried first and missed spot after spot (product names, then field-diff
+    values, then the literal strings "in_stock"/"out_of_stock", then dict
+    keys in the error-context preview) — including corrupting the very
+    system-error alert reporting the failure (an unescaped underscore
+    inside its own italics ate the "_" out of "product.price_changed").
+    The actual fix: Telegram messages are now sent as plain text (no
+    parse_mode at all, see TelegramService.send_message) — there is no
+    entity parser to break, so no value, however constructed, can ever
+    fail a send. These tests assert dynamic content survives completely
+    unmodified (no backslashes inserted, nothing silently dropped)."""
 
-    def test_escape_markdown_escapes_all_special_chars(self):
-        from src.alerts.handlers import _escape_markdown
-
-        assert _escape_markdown("18k_Gold Ring") == "18k\\_Gold Ring"
-        assert _escape_markdown("Extra *Shiny* Ring") == "Extra \\*Shiny\\* Ring"
-        assert _escape_markdown("Ring `special`") == "Ring \\`special\\`"
-        assert _escape_markdown("Ring [SALE]") == "Ring \\[SALE]"
-        assert _escape_markdown("back\\slash") == "back\\\\slash"
-
-    def test_price_changed_alert_escapes_product_name_with_underscore(self):
+    def test_price_changed_alert_keeps_underscores_in_product_name_verbatim(self):
         from src.alerts.handlers import _format_price_changed_alert
 
         payload = {
@@ -357,22 +362,42 @@ class TestMarkdownEscaping:
             ],
         }
         text = _format_price_changed_alert(payload)
-        assert "18k\\_Gold Statement Ring" in text
-        # Confirms the raw unescaped underscore never appears bare — the
-        # exact condition that broke Telegram's parser in production.
-        assert "18k_Gold" not in text
+        assert "18k_Gold Statement Ring" in text
+        assert "\\_" not in text
 
-    def test_price_changed_alert_escapes_field_change_values(self):
+    def test_price_changed_alert_keeps_stock_status_strings_verbatim(self):
+        """The literal production incident: 'in_stock'/'out_of_stock'
+        interpolated raw into a Markdown message broke Telegram's parser
+        even though the product name itself had no special characters."""
+        from src.alerts.handlers import _format_price_changed_alert
+
+        payload = {
+            "product_name": "Golden Wing Bee pendants",
+            "stock_changes": [
+                {"country": "AU", "old": {"qty": 50, "status": "in_stock"}, "new": {"qty": 50, "status": "out_of_stock"}}
+            ],
+        }
+        text = _format_price_changed_alert(payload)
+        assert "in_stock" in text
+        assert "out_of_stock" in text
+        assert "\\_" not in text
+
+    def test_price_changed_alert_keeps_field_names_and_values_verbatim(self):
         from src.alerts.handlers import _format_price_changed_alert
 
         payload = {
             "product_name": "Test Ring",
-            "field_changes": [{"field": "material", "old": "925 Silver", "new": "18k_Gold Plated"}],
+            "field_changes": [
+                {"field": "best_seller_order", "old": "3", "new": "1"},
+                {"field": "material", "old": "925 Silver", "new": "18k_Gold Plated"},
+            ],
         }
         text = _format_price_changed_alert(payload)
-        assert "18k\\_Gold Plated" in text
+        assert "best_seller_order" in text
+        assert "18k_Gold Plated" in text
+        assert "\\_" not in text
 
-    def test_price_changed_alert_escapes_actor_email(self):
+    def test_price_changed_alert_keeps_actor_email_verbatim(self):
         from src.alerts.handlers import _format_price_changed_alert
 
         payload = {
@@ -381,39 +406,109 @@ class TestMarkdownEscaping:
             "field_changes": [{"field": "active", "old": "True", "new": "False"}],
         }
         text = _format_price_changed_alert(payload)
-        assert "first\\_last@chokmoki.com" in text
+        assert "first_last@chokmoki.com" in text
 
-    def test_system_error_alert_escapes_context_values(self):
+    def test_system_error_alert_keeps_context_keys_and_values_verbatim(self):
         """The exact incident: a system-error alert ABOUT the price-changed
-        failure carried the event type 'product.price_changed' inside its
-        own unescaped `_{context}_` italics, silently eating the
-        underscore (rendered as 'product.pricechanged' in Telegram)."""
+        failure carried the event type 'product.price_changed' — with the
+        old Markdown-escaping approach the dict KEYS (event_type,
+        stream_key, ...) were never escaped even after the VALUES were,
+        which alone was still enough to break the parse."""
         from src.alerts.handlers import _format_system_error_alert
 
         payload = {
             "component": "stream_consumer",
-            "message": "Event dropped after 5 failed attempts",
-            "context": {"eventtype": "product.price_changed", "deliverycount": 5},
+            "message": "Event 'product.price_changed' dropped after 5 failed attempts",
+            "context": {"event_type": "product.price_changed", "delivery_count": 5},
         }
         text = _format_system_error_alert(payload)
-        assert "product.price\\_changed" in text
-        assert "product.pricechanged" not in text
+        assert "product.price_changed" in text
+        assert "event_type=product.price_changed" in text
+        assert "\\_" not in text
 
-    def test_stock_level_alert_escapes_product_name(self):
+    def test_stock_level_alert_keeps_product_name_verbatim(self):
         from src.alerts.handlers import _format_stock_level_alert
 
         text = _format_stock_level_alert(
             "product.low_stock",
             {"product_name": "18k_Gold Ring", "country": "AU", "qty": 5, "threshold": 10},
         )
-        assert "18k\\_Gold Ring" in text
+        assert "18k_Gold Ring" in text
+        assert "\\_" not in text
 
-    def test_contact_alert_escapes_free_text_message(self):
+    def test_contact_alert_keeps_free_text_message_verbatim(self):
         from src.alerts.handlers import _format_contact_alert
 
         payload = {"name": "A_B", "email": "a_b@example.com", "message": "Interested in *this* ring_set"}
         text = _format_contact_alert(payload)
-        assert "A\\_B" in text
-        assert "a\\_b@example.com" in text
-        assert "\\*this\\*" in text
-        assert "ring\\_set" in text
+        assert "A_B" in text
+        assert "a_b@example.com" in text
+        assert "*this* ring_set" in text
+        assert "\\" not in text
+
+
+class TestStockStatusDrivenAlertsPureRule:
+    """Regression tests for "when I put out of stock and in stock, I don't
+    get any messages": the crossing rule was purely qty-based, so an admin
+    manually flipping the status dropdown WITHOUT changing qty (exactly
+    what was happening in production — qty stayed 50, only status flipped)
+    never triggered any alert at all. evaluate_stock_crossing is now
+    status-driven first."""
+
+    def test_status_flip_to_out_of_stock_with_unchanged_qty_alerts(self):
+        from src.services.stock_alerts import STOCK_EVENT_OUT_OF_STOCK, evaluate_stock_crossing
+
+        result = evaluate_stock_crossing(50, 50, 10, "in_stock", "out_of_stock")
+        assert result == STOCK_EVENT_OUT_OF_STOCK
+
+    def test_status_flip_to_in_stock_with_unchanged_qty_alerts_back_in_stock(self):
+        from src.services.stock_alerts import STOCK_EVENT_BACK_IN_STOCK, evaluate_stock_crossing
+
+        result = evaluate_stock_crossing(50, 50, 10, "out_of_stock", "in_stock")
+        assert result == STOCK_EVENT_BACK_IN_STOCK
+
+    def test_no_status_change_falls_back_to_qty_threshold_rule(self):
+        from src.services.stock_alerts import evaluate_stock_crossing
+
+        assert evaluate_stock_crossing(50, 45, 10, "in_stock", "in_stock") is None
+        assert evaluate_stock_crossing(11, 9, 10, "in_stock", "in_stock") == "low_stock"
+
+
+@pytest.mark.asyncio
+class TestStockStatusDrivenAlertsProductService:
+    async def test_admin_flipping_status_alone_fires_out_of_stock(self, seeded_product_high_stock):
+        service = ProductService()
+        new_stock = [
+            {"country": "IN", "qty": 50, "status": "in_stock"},
+            {"country": "AU", "qty": 15, "status": "out_of_stock"},  # qty unchanged, status flipped
+            {"country": "default", "qty": 50, "status": "in_stock"},
+        ]
+        with patch("src.services.product_service.publish_alert", new_callable=AsyncMock) as mock_publish:
+            await service.update(
+                str(seeded_product_high_stock.id), {"stock": new_stock}, actor_email="root@chokmoki.com"
+            )
+        event_types = [call.args[0] for call in mock_publish.call_args_list]
+        assert "product.out_of_stock" in event_types
+
+    async def test_admin_flipping_status_back_alone_fires_back_in_stock(self, seeded_product_high_stock):
+        service = ProductService()
+        # First flip to out_of_stock (qty unchanged).
+        first_stock = [
+            {"country": "IN", "qty": 50, "status": "in_stock"},
+            {"country": "AU", "qty": 15, "status": "out_of_stock"},
+            {"country": "default", "qty": 50, "status": "in_stock"},
+        ]
+        await service.update(str(seeded_product_high_stock.id), {"stock": first_stock}, actor_email="root@chokmoki.com")
+
+        # Then flip back to in_stock (qty still unchanged).
+        second_stock = [
+            {"country": "IN", "qty": 50, "status": "in_stock"},
+            {"country": "AU", "qty": 15, "status": "in_stock"},
+            {"country": "default", "qty": 50, "status": "in_stock"},
+        ]
+        with patch("src.services.product_service.publish_alert", new_callable=AsyncMock) as mock_publish:
+            await service.update(
+                str(seeded_product_high_stock.id), {"stock": second_stock}, actor_email="root@chokmoki.com"
+            )
+        event_types = [call.args[0] for call in mock_publish.call_args_list]
+        assert "product.back_in_stock" in event_types

@@ -49,10 +49,20 @@ class TelegramService:
 
         async def _send() -> bool:
             bot = Bot(token=settings.telegram_bot_token)
+            # Deliberately NO parse_mode (plain text): Telegram's legacy
+            # Markdown parser rejects the ENTIRE message on any unescaped/
+            # unbalanced special character (_ * ` [) anywhere in dynamic
+            # content — product names, stock status strings like
+            # "out_of_stock", dict keys in a debug context, admin emails —
+            # which is exactly what caused repeated "Can't parse entities"
+            # failures (and DLQ drops) even after multiple rounds of manual
+            # per-field escaping in src/alerts/handlers.py. Plain text has
+            # no entities to parse, so this eliminates the entire bug class
+            # rather than requiring every new formatter to remember to
+            # escape every new field forever.
             await bot.send_message(
                 chat_id=target_chat_id,
                 text=text,
-                parse_mode="Markdown",
                 disable_web_page_preview=False,
             )
             return True

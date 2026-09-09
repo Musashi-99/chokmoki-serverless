@@ -9,6 +9,7 @@ from src.alerts.events import (
     EVENT_CONTACT_SUBMITTED,
     EVENT_NEWSLETTER_SUBSCRIBED,
     EVENT_ORDER_CREATED,
+    EVENT_PRODUCT_BACK_IN_STOCK,
     EVENT_PRODUCT_LOW_STOCK,
     EVENT_PRODUCT_OUT_OF_STOCK,
     EVENT_PRODUCT_PRICE_CHANGED,
@@ -52,35 +53,29 @@ SETTINGS_RESOURCES = {
 }
 
 
-def _escape_markdown(value: Any) -> str:
-    """Escape Telegram legacy Markdown's special characters before
-    interpolating ANY dynamic/user-or-admin-supplied text (product names,
-    customer names, contact messages, category/material values, actor
-    emails, error context, ...) into a message. Telegram's parser rejects
-    the ENTIRE message on an unescaped/unbalanced `_ * \` [` — send_message
-    then returns False, and after 5 stream-consumer retries the event is
-    dropped to the DLQ. Root cause of both the 'product.price_changed'
-    DLQ drops ("Can't parse entities: can't find end of the entity...")
-    and the SystemErrorHandler's own alert about it silently swallowing an
-    underscore mid-render (an unescaped `_` inside its own `_{context}_`
-    italics). Escape backslash first so already-escaped input isn't
-    double-escaped."""
-    text = str(value)
-    for ch in ("\\", "_", "*", "`", "["):
-        text = text.replace(ch, f"\\{ch}")
-    return text
+# Telegram messages are sent as PLAIN TEXT (see TelegramService.send_message
+# — deliberately no parse_mode). Every formatter below used to build
+# `*bold*`/`` `code` ``/`_italic_` markup and separately try to escape any
+# dynamic value that might contain a markdown special character — after
+# three rounds of finding yet another unescaped field (product names, then
+# field-diff values, then plain "in_stock"/"out_of_stock" status strings,
+# then dict keys in the error-context preview), the escaping approach
+# proved too easy to miss a spot and kept dropping real alerts to the DLQ
+# ("Can't parse entities..."). Plain text has no entities to parse — no
+# value, however it's built, can ever break the send. Emoji + line
+# structure carry the same readability without needing any of that.
 
 
 def _format_order_alert(payload: Dict[str, Any]) -> str:
     order_id = payload.get("order_id", "unknown")
     total = payload.get("total_amount", 0)
     total_label = f"₹{total:,.0f}" if isinstance(total, (int, float)) else f"₹{total}"
-    customer = _escape_markdown(payload.get("customer_name") or payload.get("user_email", ""))
+    customer = payload.get("customer_name") or payload.get("user_email", "")
     payment_method = (payload.get("payment_method") or "").upper()
 
     lines = [
-        "🎉 *New Order Received*",
-        f"Order: `{order_id}`",
+        "🎉 New Order Received",
+        f"Order: {order_id}",
         f"Customer: {customer}",
         f"Total: {total_label}",
     ]
@@ -92,9 +87,9 @@ def _format_order_alert(payload: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("Items:")
         for item in items[:10]:
-            name = _escape_markdown(item.get("product_name", "item"))
+            name = item.get("product_name", "item")
             qty = item.get("quantity", 1)
-            lines.append(f"• {name} × {qty}")
+            lines.append(f"• {name} x {qty}")
 
     return "\n".join(lines)
 
@@ -116,19 +111,14 @@ ADMIN_MGMT_ACTION_VERBS: Dict[str, str] = {
 
 
 def _format_settings_alert(payload: Dict[str, Any]) -> str:
-    actor = _escape_markdown(payload.get("actor_email", "unknown admin"))
+    actor = payload.get("actor_email", "unknown admin")
     resource = payload.get("resource", "unknown")
     action = payload.get("action")
 
     if resource == "admins" and action in ADMIN_MGMT_ACTION_VERBS:
         verb = ADMIN_MGMT_ACTION_VERBS[action]
-        target = _escape_markdown(
-            payload.get("invited_email") or payload.get("target_email") or "an admin"
-        )
-        # Plain text, not a `code span` — target is escaped for the
-        # surrounding Markdown, and an escaped `\_` rendering literally
-        # inside a code span is a separate footgun this avoids entirely.
-        lines = ["👤 *Admin Management*", f"{actor} {verb} {target}"]
+        target = payload.get("invited_email") or payload.get("target_email") or "an admin"
+        lines = ["👤 Admin Management", f"{actor} {verb} {target}"]
         regions = payload.get("regions")
         if regions:
             lines.append(f"Regions: {', '.join(regions)}")
@@ -139,7 +129,7 @@ def _format_settings_alert(payload: Dict[str, Any]) -> str:
 
     method = payload.get("method", "")
     path = payload.get("path", "")
-    return f"⚙️ *Setting Updated*\n{actor} updated `{resource}`\n{method} {path}"
+    return f"⚙️ Setting Updated\n{actor} updated {resource}\n{method} {path}"
 
 
 def _format_price_label(value: Any) -> str:
@@ -155,20 +145,19 @@ def _format_price_changed_alert(payload: Dict[str, Any]) -> str:
     falls back to the single old_price/new_price (legacy) pair only when
     none of the three are present, for any older caller that only set
     those two."""
-    name = _escape_markdown(payload.get("product_name", "product"))
+    name = payload.get("product_name", "product")
     actor = payload.get("actor_email")
     price_changes = payload.get("price_changes") or []
     stock_changes = payload.get("stock_changes") or []
     field_changes = payload.get("field_changes") or []
 
-    lines = ["✏️ *Product Updated*", name]
+    lines = ["✏️ Product Updated", name]
 
     if field_changes:
         lines.append("Changed:")
         for change in field_changes:
             if change.get("old") is not None or change.get("new") is not None:
-                old_val, new_val = _escape_markdown(change["old"]), _escape_markdown(change["new"])
-                lines.append(f"  {change['field']}: {old_val} → {new_val}")
+                lines.append(f"  {change['field']}: {change['old']} -> {change['new']}")
             else:
                 lines.append(f"  {change['field']} changed")
     if price_changes:
@@ -204,19 +193,16 @@ def _format_price_changed_alert(payload: Dict[str, Any]) -> str:
         lines.append(f"{old_price} → {new_price}")
 
     if actor:
-        lines.append(f"By: {_escape_markdown(actor)}")
+        lines.append(f"By: {actor}")
     return "\n".join(lines)
 
 
 def _format_contact_alert(payload: Dict[str, Any]) -> str:
-    name = _escape_markdown(payload.get("name") or "Someone")
-    email = _escape_markdown(payload.get("email", ""))
-    # Truncate BEFORE escaping — escaping after truncation could cut a
-    # message off right after a lone backslash it just inserted, which
-    # would itself break Telegram's parser.
-    message = _escape_markdown((payload.get("message") or payload.get("note") or "").strip()[:500])
+    name = payload.get("name") or "Someone"
+    email = payload.get("email", "")
+    message = (payload.get("message") or payload.get("note") or "").strip()[:500]
     lines = [
-        "📩 *New Contact Submission*",
+        "📩 New Contact Submission",
         f"{name} ({email})" if email else name,
     ]
     if message:
@@ -226,9 +212,9 @@ def _format_contact_alert(payload: Dict[str, Any]) -> str:
 
 
 def _format_newsletter_alert(payload: Dict[str, Any]) -> str:
-    email = _escape_markdown(payload.get("email", "unknown"))
-    source = _escape_markdown(payload.get("source", ""))
-    lines = ["📰 *New Newsletter Signup*", email]
+    email = payload.get("email", "unknown")
+    source = payload.get("source", "")
+    lines = ["📰 New Newsletter Signup", email]
     if source:
         lines.append(f"Source: {source}")
     return "\n".join(lines)
@@ -238,14 +224,14 @@ def _format_shipment_alert(payload: Dict[str, Any]) -> str:
     order_id = payload.get("order_id", "unknown")
     status = (payload.get("status") or "unknown").replace("_", " ").title()
     lines = [
-        "📦 *Shipment Update*",
-        f"Order: `{order_id}`",
+        "📦 Shipment Update",
+        f"Order: {order_id}",
         f"Status: {status}",
     ]
     if payload.get("courier_name"):
-        lines.append(f"Courier: {_escape_markdown(payload['courier_name'])}")
+        lines.append(f"Courier: {payload['courier_name']}")
     if payload.get("awb_code"):
-        lines.append(f"AWB: `{payload['awb_code']}`")
+        lines.append(f"AWB: {payload['awb_code']}")
     return "\n".join(lines)
 
 
@@ -420,23 +406,28 @@ class PriceChangedHandler(AlertHandler):
 
 
 def _format_stock_level_alert(event_type: str, payload: Dict[str, Any]) -> str:
-    """Out-of-stock / low-stock crossing alert — fired once per crossing by
+    """Stock state-change alert — fired once per state change by
     src/services/stock_alerts.py's evaluate_stock_crossing(), from either a
     real purchase (src/services/inventory_service.py) or an admin's manual
-    stock edit (src/services/product_service.py, which sets actor_email)."""
-    name = _escape_markdown(payload.get("product_name", "product"))
+    stock edit (src/services/product_service.py, which sets actor_email).
+    Status-driven: an admin flipping the in-stock/out-of-stock toggle
+    directly (independent of qty) alerts just the same as qty crossing a
+    threshold."""
+    name = payload.get("product_name", "product")
     country = payload.get("country", "")
     qty = payload.get("qty")
     actor = payload.get("actor_email")
 
     if event_type == EVENT_PRODUCT_OUT_OF_STOCK:
-        lines = ["🔴 *Out of Stock*", name, f"{country}: 0 remaining"]
+        lines = ["🔴 Out of Stock", name, f"{country}: 0 remaining"]
+    elif event_type == EVENT_PRODUCT_BACK_IN_STOCK:
+        lines = ["🟢 Back in Stock", name, f"{country}: {qty} remaining"]
     else:
         threshold = payload.get("threshold")
-        lines = ["🟡 *Low Stock*", name, f"{country}: {qty} remaining (threshold {threshold})"]
+        lines = ["🟡 Low Stock", name, f"{country}: {qty} remaining (threshold {threshold})"]
 
     if actor:
-        lines.append(f"By: {_escape_markdown(actor)}")
+        lines.append(f"By: {actor}")
     return "\n".join(lines)
 
 
@@ -446,7 +437,11 @@ class StockLevelHandler(AlertHandler):
         self._channel = channel
 
     async def _can_handle(self, event: AlertEvent) -> bool:
-        return event.type in (EVENT_PRODUCT_OUT_OF_STOCK, EVENT_PRODUCT_LOW_STOCK)
+        return event.type in (
+            EVENT_PRODUCT_OUT_OF_STOCK,
+            EVENT_PRODUCT_LOW_STOCK,
+            EVENT_PRODUCT_BACK_IN_STOCK,
+        )
 
     async def _process(self, event: AlertEvent) -> bool:
         await _send_to_channel(
@@ -520,23 +515,18 @@ class ShipmentUpdateHandler(AlertHandler):
 
 def _format_system_error_alert(payload: Dict[str, Any]) -> str:
     component = payload.get("component", "unknown")
-    message = _escape_markdown(payload.get("message", ""))
+    message = payload.get("message", "")
     lines = [
-        "🚨 *System Error*",
-        f"Component: `{component}`",
+        "🚨 System Error",
+        f"Component: {component}",
         message,
     ]
     context = payload.get("context") or {}
     if context:
         # Keep it short — this is a notification, not the full audit record
-        # (that's what the admin panel's System Logs view is for). Escaped
-        # per k=v pair, not on the joined string — an underscore inside an
-        # already-escaped value must not get escaped a second time by
-        # accidentally matching the wrapping `_..._` italics below.
-        preview = ", ".join(
-            f"{k}={_escape_markdown(v)}" for k, v in list(context.items())[:5]
-        )
-        lines.append(f"_{preview}_")
+        # (that's what the admin panel's System Logs view is for).
+        preview = ", ".join(f"{k}={v}" for k, v in list(context.items())[:5])
+        lines.append(preview)
     return "\n".join(lines)
 
 

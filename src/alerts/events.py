@@ -15,6 +15,21 @@ EVENT_PRODUCT_PRICE_CHANGED = "product.price_changed"
 # admin's manual stock edit (product_service.py) crossing the same rule.
 EVENT_PRODUCT_OUT_OF_STOCK = "product.out_of_stock"
 EVENT_PRODUCT_LOW_STOCK = "product.low_stock"
+EVENT_PRODUCT_BACK_IN_STOCK = "product.back_in_stock"
+
+# Maps src/services/stock_alerts.py's crossing markers (alerts-independent
+# inventory-domain strings) to the Telegram event type each becomes — the
+# one place both inventory_service.py and product_service.py look this up,
+# so a third crossing kind added later only needs an entry here.
+_STOCK_CROSSING_EVENT_MAP = {
+    "out_of_stock": EVENT_PRODUCT_OUT_OF_STOCK,
+    "low_stock": EVENT_PRODUCT_LOW_STOCK,
+    "back_in_stock": EVENT_PRODUCT_BACK_IN_STOCK,
+}
+
+
+def event_type_for_stock_crossing(crossing: str) -> str:
+    return _STOCK_CROSSING_EVENT_MAP[crossing]
 EVENT_CONTACT_SUBMITTED = "contact.submitted"
 EVENT_NEWSLETTER_SUBSCRIBED = "newsletter.subscribed"
 EVENT_SHIPMENT_UPDATE = "shipment.updated"
