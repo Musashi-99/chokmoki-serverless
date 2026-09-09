@@ -19,6 +19,11 @@ async def test_order_insert_failure_does_not_leave_inventory_committed():
     product.name = "Ring"
     product.price_inr = 1000.0
     product.active = True
+    # No per-region prices configured — create_from_admin() falls back to
+    # price_inr when a product has no `prices` rows at all (an empty list,
+    # not a truthy-but-unusable MagicMock, matching what a real product
+    # with no MarketPrice rows looks like).
+    product.prices = []
 
     with patch("src.services.order_service.ProductService") as mock_prod_cls, \
          patch("src.services.order_service.InventoryService") as mock_inv_cls, \

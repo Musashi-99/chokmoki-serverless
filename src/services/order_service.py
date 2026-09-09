@@ -651,10 +651,17 @@ class OrderService:
         correlation_id: Optional[str] = None,
     ) -> Order:
         """Create an order from the admin dashboard (manual / phone orders)."""
+        from src.models.region import normalize_region_code
+
         payload = self._normalize_admin_payload(payload)
         user_email = (payload.get("user_email") or "").strip()
         shipping_address = payload.get("shipping_address") or {}
         items_in = payload.get("items") or []
+        # Which market this manual order is actually for — drives per-region
+        # pricing, currency, and which stock bucket gets decremented (see
+        # below). Defaults to "default" only if the caller genuinely omits
+        # it; the admin UI always sends the admin's selected/assigned region.
+        order_country = normalize_region_code(payload.get("country")) or "default"
 
         if not user_email:
             raise ValueError("user_email is required")
@@ -667,6 +674,8 @@ class OrderService:
 
         product_service = ProductService()
         validated_items: List[ValidatedOrderItem] = []
+        order_currency: Optional[str] = None
+        order_currency_symbol: Optional[str] = None
 
         for raw in items_in:
             product_id = raw.get("product_id") or raw.get("productId")
@@ -691,7 +700,14 @@ class OrderService:
             if not self._validate_variant(product, variant):
                 raise ValueError(f"Invalid variant for product {product.name}")
 
-            unit_price = money(product.price_inr)
+            # Per-region price, not always India's — resolve_price is the
+            # exact same Chain of Responsibility (exact country match, then
+            # "default" bucket) real checkout uses (src/pricing/price_lookup.py),
+            # reused here rather than re-deriving pricing logic.
+            market_price = resolve_price(product.prices, order_country) if product.prices else None
+            unit_price = money(market_price.sellingPrice) if market_price else money(product.price_inr)
+            if market_price and order_currency is None:
+                order_currency, order_currency_symbol = market_price.currency, market_price.sym
             validated_items.append(
                 ValidatedOrderItem(
                     product_id=str(product.id),
@@ -770,27 +786,35 @@ class OrderService:
             "discount": discount,
             "shipping": shipping,
             "total_amount": total_amount,
-            # Admin manual orders use price_inr directly (see admin_order_country
-            # below) — always India, always INR.
-            "currency": "INR",
-            "currency_symbol": "₹",
+            "currency": order_currency or "INR",
+            "currency_symbol": order_currency_symbol or "₹",
             "payment_method": payment_method,
             "payment_status": payment_status,
             "status": status.model_dump(),
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log,
+            # No GeoIP/session context for an admin-typed order — the rest
+            # of the evidence-trail fields (ip_country, selected_country,
+            # etc.) genuinely don't apply here the way they do for a real
+            # checkout; pricing_country_used is what actually matters for
+            # region filtering/reporting, and it's set to what the admin
+            # explicitly picked, not guessed.
+            "region_audit": RegionAudit(
+                selected_country=order_country,
+                pricing_country_used=order_country,
+            ).model_dump(),
         }
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()
 
-        # Admin manual orders use price_inr directly (no GeoIP/region
-        # resolution in this path) — India is the only market this flow has
-        # ever supported, so it's the correct stock bucket to decrement.
-        admin_order_country = "IN"
+        # Decrement the region the order was actually priced/created for —
+        # previously always "IN" regardless of the real destination, which
+        # silently decremented the wrong region's stock for any non-India
+        # manual order.
         inventory_service = InventoryService()
         committed_items: List[ValidatedOrderItem] = []
         if payment_status == "completed":
-            await inventory_service.commit_items(validated_items, admin_order_country)
+            await inventory_service.commit_items(validated_items, order_country)
             committed_items = validated_items
 
         try:
@@ -798,7 +822,7 @@ class OrderService:
         except Exception:
             if committed_items:
                 await inventory_service.release_committed_items(
-                    committed_items, admin_order_country
+                    committed_items, order_country
                 )
             raise
         order_dict["_id"] = result.inserted_id

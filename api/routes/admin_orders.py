@@ -11,6 +11,7 @@ from api.bootstrap import (
     OrderStatus,
     ProductService,
     ShiprocketAPIError,
+    cache,
     db,
     get_client_ip,
     logger,
@@ -78,6 +79,24 @@ def _region_filter(
     return allowed
 
 
+def _assert_order_country_in_scope(principal: AdminPrincipal, country: Optional[str]) -> None:
+    """Create-time counterpart to _enforce_order_region/_region_filter
+    above (which guard reading/updating an EXISTING order) — a regional
+    admin creating a brand-new manual order may only create it for one of
+    their own assigned region(s). Mirrors
+    admin_coupons.py's _assert_coupon_countries_in_scope. Root and an
+    admin with no regions assigned are unrestricted, as everywhere else."""
+    if principal.is_root or not principal.regions:
+        return
+    allowed = set(normalize_region_codes(list(principal.regions)))
+    normalized = normalize_region_code(country) or (country or "").strip().lower() or "default"
+    if normalized not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You can only create orders for your assigned region(s): {sorted(allowed)}",
+        )
+
+
 @router.get("/api/admin/orders")
 async def admin_list_orders(
     skip: int = 0,
@@ -90,7 +109,14 @@ async def admin_list_orders(
     country: Optional[str] = None,
     principal: AdminPrincipal = Depends(require_scope("orders", "read")),
 ):
-    """List all orders for the admin dashboard with optional filtering."""
+    """List all orders for the admin dashboard with optional filtering.
+
+    Cache-aside (60s TTL) — the dashboard's client-side revenue/top-products
+    computation pages through this endpoint in full (200 at a time) on
+    every load, which was re-running the same uncached Mongo query
+    repeatedly. Keyed by every param that affects the result, so a cache
+    hit only ever happens for a genuinely identical request.
+    """
     if OrderService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
@@ -105,6 +131,15 @@ async def admin_list_orders(
     if forced_regions:
         country = None
 
+    cache_key = (
+        f"admin:orders:{skip}:{limit}:{status}:{search}:{from_date}:{to_date}:"
+        f"{coupon}:{country}:{','.join(sorted(forced_regions)) if forced_regions else ''}"
+    )
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
+
     service = OrderService()
     orders = await service.list(
         skip=skip, limit=limit,
@@ -117,19 +152,24 @@ async def admin_list_orders(
         from_date=from_date, to_date=to_date,
         coupon=coupon, country=country, countries=forced_regions,
     )
-    return JSONResponse(content=json.loads(json.dumps({
+    payload = json.dumps({
         "data": [order.model_dump(by_alias=True) for order in orders],
         "count": total,
-    }, cls=JSONEncoder)))
+    }, cls=JSONEncoder)
+    if cache:
+        await cache.set(cache_key, payload, 60)
+    return JSONResponse(content=json.loads(payload))
 
 
 @router.post("/api/admin/orders")
 async def admin_create_order(
-    request: Request, payload: Dict[str, Any], email: str = Depends(require_scope_email("orders", "write"))
+    request: Request, payload: Dict[str, Any], principal: AdminPrincipal = Depends(require_scope("orders", "write"))
 ):
     """Create an order from the admin dashboard (phone / manual orders)."""
     if OrderService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    _assert_order_country_in_scope(principal, payload.get("country"))
 
     try:
         service = OrderService()
@@ -338,16 +378,30 @@ async def admin_mark_payment_collected(order_id: str, principal: AdminPrincipal 
 
 @router.get("/api/admin/stats")
 async def admin_get_stats(principal: AdminPrincipal = Depends(require_scope("orders", "read"))):
-    """Dashboard overview stats: order counts, revenue, product count."""
+    """Dashboard overview stats: order counts, revenue, product count.
+
+    Cache-aside (60s TTL) — this was the main source of "dashboard feels
+    slow": four separate Mongo aggregations re-run from scratch on every
+    single page open/poll, for data that's inherently a little stale
+    anyway (a dashboard summary, not a live ticker). Keyed by the admin's
+    effective region scope so root and different regional admins never
+    share a cached result meant for a different set of orders.
+    """
     if OrderService is None or ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
+
+    forced_regions = _region_filter(principal)
+    cache_key = f"admin:stats:{','.join(sorted(forced_regions)) if forced_regions else 'all'}"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return JSONResponse(content=json.loads(cached))
 
     database = await db.get_database()
 
     orders_collection = database["orders"]
     products_collection = database["products"]
     region_match: Dict[str, Any] = {}
-    forced_regions = _region_filter(principal)
     if forced_regions:
         region_match = {"region_audit.pricing_country_used": {"$in": forced_regions}}
 
@@ -382,14 +436,17 @@ async def admin_get_stats(principal: AdminPrincipal = Depends(require_scope("ord
     total_products = await products_collection.count_documents({})
     active_products = await products_collection.count_documents({"active": True})
 
-    return JSONResponse(content=json.loads(json.dumps({
+    payload = json.dumps({
         "totalOrders": total_orders,
         "totalRevenue": total_revenue,
         "ordersToday": orders_today,
         "statusCounts": status_counts,
         "totalProducts": total_products,
         "activeProducts": active_products,
-    }, cls=JSONEncoder)))
+    }, cls=JSONEncoder)
+    if cache:
+        await cache.set(cache_key, payload, 60)
+    return JSONResponse(content=json.loads(payload))
 
 
 # ========== Shiprocket fulfillment (admin-driven) ==========
