@@ -1,0 +1,6 @@
+-r requirements.txt
+
+bandit>=1.7.9
+pip-audit>=2.7.3
+semgrep>=1.78.0
+cyclonedx-bom>=4.5.0
