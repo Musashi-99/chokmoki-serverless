@@ -40,10 +40,53 @@ from src.config import settings
 from src.database.connection import db
 from src.services.discount_service import coupon_product_ids
 from src.utils.money import allocate_shares, inr_to_paise, money
-from src.utils.region import is_india_address
+from src.utils.region import is_au_address, is_india_address, is_nz_address
 
 ORDERS_COLLECTION = "orders"
 COUNTERS_COLLECTION = "counters"
+
+# --- Fonts -----------------------------------------------------------------
+# reportlab's base-14 fonts (Helvetica & co.) have NO glyph for U+20B9
+# RUPEE SIGN — every ₹ on a generated invoice rendered as a black box.
+# Noto Sans (SIL OFL, bundled in assets/fonts/) covers it, so the whole
+# document switches to it rather than mixing families: currency-adjacent
+# text appears on nearly every line, and Noto renders plain ASCII
+# essentially identically to Helvetica at these sizes.
+#
+# If registration ever fails (a packaging miss in some future deploy
+# target), we fall back to the base-14 names: a document with a boxed ₹ is
+# far better than no document at all.
+_FONT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "assets",
+    "fonts",
+)
+
+
+def _register_invoice_fonts() -> Tuple[str, str, str]:
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    pdfmetrics.registerFont(TTFont("NotoSans", os.path.join(_FONT_DIR, "NotoSans-Regular.ttf")))
+    pdfmetrics.registerFont(TTFont("NotoSans-Bold", os.path.join(_FONT_DIR, "NotoSans-Bold.ttf")))
+    # No italic face is bundled — the only oblique text on these documents
+    # is plain English, so it maps to the regular face.
+    pdfmetrics.registerFontFamily(
+        "NotoSans",
+        normal="NotoSans",
+        bold="NotoSans-Bold",
+        italic="NotoSans",
+        boldItalic="NotoSans-Bold",
+    )
+    return "NotoSans", "NotoSans-Bold", "NotoSans"
+
+
+try:
+    FONT_REGULAR, FONT_BOLD, FONT_ITALIC = _register_invoice_fonts()
+    UNICODE_FONTS_AVAILABLE = True
+except Exception:  # pragma: no cover - only on a broken/incomplete deploy
+    FONT_REGULAR, FONT_BOLD, FONT_ITALIC = "Helvetica", "Helvetica-Bold", "Helvetica-Oblique"
+    UNICODE_FONTS_AVAILABLE = False
 
 GST_STATE_CODES = {
     "andaman and nicobar islands": "35",
@@ -235,6 +278,27 @@ class InvoiceService:
         destination of the parcel."""
         return is_india_address((order_doc.get("shipping_address") or {}).get("country"))
 
+    def _tax_region(self, order_doc: Dict[str, Any]) -> str:
+        """Which tax regime, if any, this parcel's destination falls under:
+        "IN" | "AU" | "NZ" | "default". Same address-name sets the
+        storefront uses, checked against the physical shipping address for
+        exactly the reasons is_india_order() documents above."""
+        country = (order_doc.get("shipping_address") or {}).get("country")
+        if is_india_address(country):
+            return "IN"
+        if is_au_address(country):
+            return "AU"
+        if is_nz_address(country):
+            return "NZ"
+        return "default"
+
+    def is_tax_invoice_eligible(self, order_doc: Dict[str, Any]) -> bool:
+        """A "Tax Invoice" is a document issued under a tax regime we're
+        actually operating in. India (GST), plus Australia and New Zealand
+        — both of which have a real GST regime and a configurable rate
+        (0% until registration, which is still a legitimate document)."""
+        return self.is_india_order(order_doc) or self._tax_region(order_doc) in ("AU", "NZ")
+
     def _is_intra_state(self, order_doc: Dict[str, Any]) -> bool:
         customer_state = (order_doc.get("shipping_address") or {}).get("state") or ""
         seller_state = settings.invoice_seller_state
@@ -261,12 +325,22 @@ class InvoiceService:
         Discount is allocated onto eligible lines before the GST split so
         taxable value matches what was charged.
         """
+        region = self._tax_region(order_doc)
+        # India's rate resolves to gst_total_percent exactly as before —
+        # gst_rate_for_region("IN") IS gst_total_percent, so the domestic
+        # math below is unchanged. AU/NZ get their own single flat rate
+        # (0% until the business registers there); everywhere else is an
+        # export with no tax to charge.
         rate = (
-            Decimal(str(settings.gst_total_percent)) / Decimal("100")
-            if settings.gst_enabled and self.is_india_order(order_doc)
+            Decimal(str(settings.gst_rate_for_region(region))) / Decimal("100")
+            if settings.gst_enabled and region in ("IN", "AU", "NZ")
             else Decimal("0")
         )
         split_tax = doc_type != "bill_of_supply" and rate > 0
+        # Only India splits the tax into CGST+SGST / IGST; AU/NZ GST is a
+        # single line, so it gets its own `gst` field per row rather than
+        # overloading `igst` with something that isn't an integrated tax.
+        india_split = split_tax and region == "IN"
         intra = self._is_intra_state(order_doc)
 
         items = list(order_doc.get("items", []))
@@ -296,13 +370,16 @@ class InvoiceService:
             rows.append({
                 "name": item.get("product_name", "Item"),
                 "sku": item.get("product_id", ""),
-                "hsn": settings.gst_hsn_code if split_tax else "",
+                # HSN is an Indian GST classification — meaningless on an
+                # AU/NZ document, which prints no HSN column at all.
+                "hsn": settings.gst_hsn_code if india_split else "",
                 "qty": qty,
                 "unit_price": unit_price,
                 "taxable": taxable,
-                "cgst": half if (split_tax and intra) else 0.0,
-                "sgst": remainder if (split_tax and intra) else 0.0,
-                "igst": tax_amount if (split_tax and not intra) else 0.0,
+                "cgst": half if (india_split and intra) else 0.0,
+                "sgst": remainder if (india_split and intra) else 0.0,
+                "igst": tax_amount if (india_split and not intra) else 0.0,
+                "gst": tax_amount if (split_tax and not india_split) else 0.0,
                 "gross": line_total,
                 "total": net,
                 "net": net,
@@ -319,6 +396,7 @@ class InvoiceService:
         cgst = money(sum(r["cgst"] for r in rows))
         sgst = money(sum(r["sgst"] for r in rows))
         igst = money(sum(r["igst"] for r in rows))
+        gst = money(sum(r.get("gst", 0) for r in rows))
         grand = money(order_doc.get("total_amount") or 0)
         return {
             "gross": gross,
@@ -329,6 +407,7 @@ class InvoiceService:
             "cgst": cgst,
             "sgst": sgst,
             "igst": igst,
+            "gst": gst,
             "grand": grand,
         }
 
@@ -349,15 +428,17 @@ class InvoiceService:
             raise ValueError(f"Unknown document type: {doc_type}")
 
         is_india = self.is_india_order(order_doc)
-        if doc_type == "tax_invoice" and not is_india:
-            # A "Tax Invoice" is specifically a domestic-GST document — an
-            # export has no CGST/SGST/IGST to charge, so this document type
-            # simply doesn't apply. The admin route rejects this before ever
-            # calling build_pdf; this is the defense-in-depth copy of that
-            # same check for any other caller.
+        tax_region = self._tax_region(order_doc)
+        if doc_type == "tax_invoice" and not self.is_tax_invoice_eligible(order_doc):
+            # A "Tax Invoice" is a document issued under a tax regime we
+            # actually operate in (India, Australia, New Zealand) — an
+            # export anywhere else has no tax to charge, so this document
+            # type simply doesn't apply. The admin route rejects this
+            # before ever calling build_pdf; this is the defense-in-depth
+            # copy of that same check for any other caller.
             raise ValueError(
-                "Tax Invoice (GST) is only issued for orders shipping within India — "
-                "use Bill of Supply for this order."
+                "Tax Invoice (GST) is only issued for orders shipping within India, "
+                "Australia or New Zealand — use Bill of Supply for this order."
             )
         # The amount fields on this order were resolved once, at
         # order-creation time, against whichever MarketPrice bucket actually
@@ -390,14 +471,14 @@ class InvoiceService:
             logo_w = logo_h * iw / ih
             c.drawImage(img, margin, y - logo_h, width=logo_w, height=logo_h, mask="auto")
         else:
-            c.setFont("Helvetica-Bold", 20)
+            c.setFont(FONT_BOLD, 20)
             c.setFillColor(ink)
             c.drawString(margin, y - 10 * mm, settings.invoice_brand_name)
 
-        c.setFont("Helvetica-Bold", 16)
+        c.setFont(FONT_BOLD, 16)
         c.setFillColor(burgundy)
         c.drawRightString(page_w - margin, y - 8 * mm, DOC_TITLES[doc_type])
-        c.setFont("Helvetica", 8)
+        c.setFont(FONT_REGULAR, 8)
         c.setFillColor(muted)
         c.drawRightString(page_w - margin, y - 13 * mm, settings.invoice_brand_tagline.upper())
         y -= logo_h + 6 * mm
@@ -411,7 +492,7 @@ class InvoiceService:
         addr = order_doc.get("shipping_address") or {}
         col_w = (page_w - 2 * margin) / 3
 
-        def wrap_to_width(text: str, max_width: float, font: str = "Helvetica", size: float = 8) -> List[str]:
+        def wrap_to_width(text: str, max_width: float, font: str = FONT_REGULAR, size: float = 8) -> List[str]:
             """Wrap by measured width, never by silently cutting characters —
             a truncated order id on a legal document reads as a DIFFERENT id
             (confirmed live: the PDF printed 'f394ec0d-…-9449' while every
@@ -442,11 +523,11 @@ class InvoiceService:
             return segments or [""]
 
         def block(x: float, top: float, title: str, lines: List[str]) -> float:
-            c.setFont("Helvetica-Bold", 8.5)
+            c.setFont(FONT_BOLD, 8.5)
             c.setFillColor(ink)
             c.drawString(x, top, title)
             yy = top - 4.5 * mm
-            c.setFont("Helvetica", 8)
+            c.setFont(FONT_REGULAR, 8)
             c.setFillColor(muted)
             for line in lines:
                 if not line:
@@ -495,22 +576,33 @@ class InvoiceService:
         # -- Items table
         rows = self._tax_lines(order_doc, doc_type)
         intra = self._is_intra_state(order_doc)
-        show_tax = doc_type != "bill_of_supply" and settings.gst_enabled and is_india
-        if show_tax and intra:
+        tax_rate = settings.gst_rate_for_region(tax_region) if settings.gst_enabled else 0.0
+        # A tax document only grows tax columns when there is actually a
+        # rate to show — an AU/NZ Tax Invoice at the current 0% default is
+        # a legitimate zero-tax document and renders like a plain one.
+        show_tax = doc_type != "bill_of_supply" and tax_rate > 0
+        show_india_tax = show_tax and is_india
+        show_flat_tax = show_tax and not is_india
+        if show_india_tax and intra:
             headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
                        f"CGST ({settings.gst_cgst_percent}%)", f"SGST ({settings.gst_sgst_percent}%)", "Total (Incl. GST)"]
             widths = [0.05, 0.29, 0.07, 0.05, 0.11, 0.13, 0.10, 0.10, 0.10]
-        elif show_tax:
+        elif show_india_tax:
             headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
                        f"IGST ({self._fmt_rate(settings.gst_total_percent)}%)", "Total (Incl. GST)"]
             widths = [0.05, 0.34, 0.08, 0.05, 0.12, 0.14, 0.10, 0.12]
+        elif show_flat_tax:
+            # AU/NZ: one flat GST column, no HSN (an Indian classification).
+            headers = ["S.No", "Product", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
+                       f"GST ({self._fmt_rate(tax_rate)}%)", "Total (Incl. GST)"]
+            widths = [0.05, 0.37, 0.06, 0.13, 0.14, 0.11, 0.14]
         else:
             headers = ["S.No", "Product", "Qty", f"Unit Price ({currency_sym})", f"Total ({currency_code})"]
             widths = [0.06, 0.52, 0.08, 0.16, 0.18]
         widths = [w * (page_w - 2 * margin) for w in widths]
 
         def table_row(values: List[str], yy: float, *, bold: bool = False) -> float:
-            c.setFont("Helvetica-Bold" if bold else "Helvetica", 7.5)
+            c.setFont(FONT_BOLD if bold else FONT_REGULAR, 7.5)
             c.setFillColor(ink if bold else muted)
             x = margin
             for value, w in zip(values, widths):
@@ -525,12 +617,15 @@ class InvoiceService:
         c.line(margin, y + 4 * mm, page_w - margin, y + 4 * mm)
 
         for i, r in enumerate(rows, start=1):
-            if show_tax and intra:
+            if show_india_tax and intra:
                 values = [i, r["name"], r["hsn"], r["qty"], f"{r['unit_price']:.2f}",
                           f"{r['taxable']:.2f}", f"{r['cgst']:.2f}", f"{r['sgst']:.2f}", f"{r['total']:.2f}"]
-            elif show_tax:
+            elif show_india_tax:
                 values = [i, r["name"], r["hsn"], r["qty"], f"{r['unit_price']:.2f}",
                           f"{r['taxable']:.2f}", f"{r['igst']:.2f}", f"{r['total']:.2f}"]
+            elif show_flat_tax:
+                values = [i, r["name"], r["qty"], f"{r['unit_price']:.2f}",
+                          f"{r['taxable']:.2f}", f"{r.get('gst', 0):.2f}", f"{r['total']:.2f}"]
             else:
                 values = [i, r["name"], r["qty"], f"{r['unit_price']:.2f}", f"{r['total']:.2f}"]
             y = table_row(values, y)
@@ -549,7 +644,7 @@ class InvoiceService:
         subtotal = totals["gross"]
 
         def total_line(label: str, value: str, yy: float, *, bold: bool = False) -> float:
-            c.setFont("Helvetica-Bold" if bold else "Helvetica", 8.5 if bold else 8)
+            c.setFont(FONT_BOLD if bold else FONT_REGULAR, 8.5 if bold else 8)
             c.setFillColor(ink if bold else muted)
             c.drawRightString(page_w - margin - 30 * mm, yy, label)
             c.drawRightString(page_w - margin, yy, value)
@@ -568,12 +663,18 @@ class InvoiceService:
         y = total_line("GRAND TOTAL:", fmt_money(grand_total), y, bold=True)
         if show_tax:
             y -= 2 * mm
-            c.setFont("Helvetica", 7.5)
+            c.setFont(FONT_REGULAR, 7.5)
             c.setFillColor(muted)
             c.drawRightString(page_w - margin, y, "GST breakup (included in prices)")
             y -= 4.5 * mm
             y = total_line("Taxable Value:", fmt_money(taxable_total), y)
-            if intra:
+            if show_flat_tax:
+                y = total_line(
+                    f"GST @ {self._fmt_rate(tax_rate)}%:",
+                    fmt_money(totals["gst"]),
+                    y,
+                )
+            elif intra:
                 y = total_line(f"CGST @ {settings.gst_cgst_percent}%:", fmt_money(cgst_total), y)
                 y = total_line(f"SGST @ {settings.gst_sgst_percent}%:", fmt_money(sgst_total), y)
             else:
@@ -584,7 +685,7 @@ class InvoiceService:
                 )
         y -= 1 * mm
 
-        c.setFont("Helvetica-Oblique", 8)
+        c.setFont(FONT_ITALIC, 8)
         c.setFillColor(muted)
         if currency_code == "INR":
             c.drawString(margin, y, f"Amount in words: {amount_in_words_inr(grand_total)}")
@@ -594,11 +695,11 @@ class InvoiceService:
 
         # -- Receipt payment block / tax declaration
         if doc_type == "receipt":
-            c.setFont("Helvetica-Bold", 8.5)
+            c.setFont(FONT_BOLD, 8.5)
             c.setFillColor(ink)
             c.drawString(margin, y, "PAYMENT DETAILS:")
             y -= 4.5 * mm
-            c.setFont("Helvetica", 8)
+            c.setFont(FONT_REGULAR, 8)
             c.setFillColor(muted)
             method = (order_doc.get("payment_method") or "").upper()
             paid = order_doc.get("payment_status") == "completed"
@@ -610,7 +711,7 @@ class InvoiceService:
             c.drawString(margin, y, f"Amount Received: {fmt_money(grand_total)}" if paid else "Amount Due on Delivery")
             y -= 8 * mm
         elif is_india:
-            c.setFont("Helvetica", 8)
+            c.setFont(FONT_REGULAR, 8)
             c.setFillColor(muted)
             c.drawString(margin, y, "Whether tax is payable under reverse charge — No")
             y -= 8 * mm
@@ -619,17 +720,17 @@ class InvoiceService:
         c.setStrokeColor(hairline)
         c.line(margin, y, page_w - margin, y)
         y -= 5 * mm
-        c.setFont("Helvetica", 7.5)
+        c.setFont(FONT_REGULAR, 7.5)
         c.setFillColor(muted)
         c.drawString(margin, y, "Declaration: Certified that the particulars given above are true and correct.")
-        c.setFont("Helvetica-Bold", 8)
+        c.setFont(FONT_BOLD, 8)
         c.setFillColor(ink)
         c.drawRightString(page_w - margin, y, f"For {settings.invoice_seller_name}")
         y -= 12 * mm
-        c.setFont("Helvetica", 7.5)
+        c.setFont(FONT_REGULAR, 7.5)
         c.setFillColor(muted)
         c.drawRightString(page_w - margin, y, "Authorised Signatory")
-        c.setFont("Helvetica-Oblique", 7)
+        c.setFont(FONT_ITALIC, 7)
         c.drawString(
             margin, y,
             f"{settings.invoice_brand_name} · {settings.invoice_brand_tagline} · "

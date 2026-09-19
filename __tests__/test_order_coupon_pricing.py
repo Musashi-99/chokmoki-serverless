@@ -573,9 +573,13 @@ class TestOrderCurrencyPersistence:
 class TestInvoiceGstCountryGating:
     """CGST/SGST/IGST is a domestic-supply tax — an order that ships outside
     India is an export, which isn't set up to charge Indian GST. A "Tax
-    Invoice" document (and any GST split on a "receipt") must never be
-    produced for one of those orders, regardless of what doc_type an admin
-    requests."""
+    Invoice" document (and any Indian GST split on a "receipt") must never
+    be produced for one of those orders, regardless of what doc_type an
+    admin requests. Australia and New Zealand are a deliberate exception:
+    both have their own GST regimes, so those shipping countries are
+    tax-invoice-eligible too (via GST_AU_PERCENT/GST_NZ_PERCENT, 0% by
+    default) — see TestAuNzTaxInvoice below. A genuinely non-taxable
+    country (e.g. the US) must still be rejected for "tax_invoice"."""
 
     def _order_doc(self, *, country: str, currency: str = "INR", sym: str = "₹"):
         return {
@@ -609,13 +613,13 @@ class TestInvoiceGstCountryGating:
 
         assert InvoiceService().is_india_order(self._order_doc(country="Australia")) is False
 
-    def test_tax_invoice_raises_for_non_india_order(self):
+    def test_tax_invoice_raises_for_non_taxable_order(self):
         from src.services.invoice_service import InvoiceService
 
         service = InvoiceService()
-        with pytest.raises(ValueError, match="only issued for orders shipping within India"):
+        with pytest.raises(ValueError, match="India, Australia"):
             service.build_pdf(
-                self._order_doc(country="Australia", currency="USD", sym="$"),
+                self._order_doc(country="United States", currency="USD", sym="$"),
                 doc_type="tax_invoice",
                 invoice_number="INV-2026-000001",
                 invoice_date=__import__("datetime").datetime.utcnow(),

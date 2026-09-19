@@ -67,6 +67,27 @@ def _order_alert_payload(order_dict: dict) -> dict:
     }
 
 
+async def _mark_abandoned_cart_converted(order_dict: dict, order_id: str) -> None:
+    """Close the loop on any abandoned-cart lead this customer left behind.
+
+    Strictly best-effort: most orders never had a captured lead (the
+    customer completed checkout in one go), and a marketing record is
+    never worth failing a real, paid order over — every failure is
+    swallowed with a warning.
+    """
+    try:
+        from src.services.abandoned_cart_service import AbandonedCartService
+
+        shipping_address = order_dict.get("shipping_address") or {}
+        await AbandonedCartService().mark_converted(
+            order_dict.get("user_email"),
+            shipping_address.get("phone"),
+            order_id,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Abandoned cart conversion hook failed for {order_id}: {exc}")
+
+
 class OrderService:
     COLLECTION_NAME = "orders"
     ORDER_LOGS_COLLECTION = "order_logs"
@@ -326,6 +347,9 @@ class OrderService:
         saved = await orders_collection.find_one({"order_id": order_id})
         if not saved:
             return None, "not_found"
+
+        if created:
+            await _mark_abandoned_cart_converted(saved, order_id)
 
         saved = await self._finish_post_processing(
             order_id, saved, order_dict.get("raw_order_log", {}),
@@ -618,6 +642,8 @@ class OrderService:
         }
         await logs_collection.insert_one(log_dict)
 
+        await _mark_abandoned_cart_converted(order_dict, order_id)
+
         if publish_alert:
             await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(order_dict))
         await order_ledger.append_event(
@@ -833,6 +859,8 @@ class OrderService:
             "created_at": datetime.utcnow(),
         }
         await logs_collection.insert_one(log_dict)
+
+        await _mark_abandoned_cart_converted(order_dict, order_id)
 
         if publish_alert:
             await publish_alert(EVENT_ORDER_CREATED, _order_alert_payload(order_dict))

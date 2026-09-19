@@ -156,6 +156,21 @@ rules:
         window: 24h
         burst: 1
 
+  # Abandoned-cart capture. The storefront debounces this at ~1s while
+  # someone fills in checkout, so a genuine session produces a short
+  # trickle of writes — 30/min (one every 2s) with a burst of 5 absorbs
+  # that comfortably while still capping a script. IP-only on purpose: an
+  # email-scoped bucket would throttle one real customer's own typing.
+  - id: cart_activity
+    match:
+      methods: [POST]
+      paths: [/api/cart-activity]
+    buckets:
+      - scope: ip
+        rate: 30
+        window: 1m
+        burst: 5
+
   # F-14: cap public analytics writes per IP so trackEvent/trackMetric cannot
   # be used to flood/poison dashboards. Validation (allowlists + bounds) lives
   # in src/cqrs/param_models.py; this is the volume control.

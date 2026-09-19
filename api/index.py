@@ -77,6 +77,13 @@ async def lifespan(app: FastAPI):
             except Exception as idx_err:
                 if logger:
                     logger.warning(f"Coupon index setup skipped: {idx_err}")
+            try:
+                from src.services.abandoned_cart_service import AbandonedCartService
+
+                await AbandonedCartService().ensure_indexes()
+            except Exception as idx_err:
+                if logger:
+                    logger.warning(f"Abandoned cart index setup skipped: {idx_err}")
         if redis_client:
             await redis_client.connect()
         # Ensure the R2 media bucket exists for dynamic asset hosting
@@ -143,6 +150,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 from api.routes import (
     account,
+    admin_abandoned_carts,
     admin_auth,
     admin_backup,
     admin_catalog,
@@ -158,6 +166,7 @@ from api.routes import (
     admin_upload,
     admin_users,
     auth,
+    cart_activity,
     contact,
     coupons,
     cqrs,
@@ -175,6 +184,7 @@ app.include_router(storefront.router)
 app.include_router(pincode.router)
 app.include_router(geo.router)
 app.include_router(contact.router)
+app.include_router(cart_activity.router)
 app.include_router(orders.router)
 app.include_router(coupons.router)
 app.include_router(auth.router)
@@ -185,6 +195,7 @@ app.include_router(admin_import.router)
 app.include_router(admin_backup.router)
 app.include_router(admin_orders_backup.router)
 app.include_router(admin_orders.router)
+app.include_router(admin_abandoned_carts.router)
 app.include_router(admin_catalog.router)
 app.include_router(admin_coupons.router)
 app.include_router(admin_content.router)

@@ -287,10 +287,10 @@ async def admin_order_invoice_pdf(
     _enforce_order_region(principal, order_doc)
 
     service = InvoiceService()
-    if doc_type == "tax_invoice" and not service.is_india_order(order_doc):
+    if doc_type == "tax_invoice" and not service.is_tax_invoice_eligible(order_doc):
         raise HTTPException(
             status_code=400,
-            detail="Tax Invoice (GST) is only issued for orders shipping within India — use Bill of Supply for this order.",
+            detail="Tax Invoice (GST) is only issued for orders shipping within India, Australia or New Zealand — use Bill of Supply for this order.",
         )
     invoice_number, invoice_date = await service.get_or_assign_invoice_number(order_id)
     pdf_bytes = await asyncio.to_thread(

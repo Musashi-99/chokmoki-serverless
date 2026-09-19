@@ -88,6 +88,8 @@ try:
     from src.models.history_page_settings import HistoryPageSettingsUpdate
     from src.models.product_page_settings import ProductPageSettingsUpdate
     from src.models.inbox import ContactSubmissionCreate, NewsletterSubscribeCreate
+    from src.models.abandoned_cart import AbandonedCartRecordInput
+    from src.services.abandoned_cart_service import AbandonedCartService
     from src.services.cache_service import cache
     from src.services.import_service import (
         BundleParseError,
@@ -219,6 +221,8 @@ except Exception as e:
     ProductPageSettingsUpdate = None
     ContactSubmissionCreate = None
     NewsletterSubscribeCreate = None
+    AbandonedCartRecordInput = None
+    AbandonedCartService = None
     cache = None
     AuthorizationError = None
     MFACodeRequired = None
