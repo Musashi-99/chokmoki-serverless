@@ -186,6 +186,26 @@ class Settings(BaseSettings):
     gst_enabled: bool = Field(default=True, env="GST_ENABLED")
     gst_cgst_percent: float = Field(default=1.5, env="GST_CGST_PERCENT")
     gst_sgst_percent: float = Field(default=1.5, env="GST_SGST_PERCENT")
+    # Australia (10%) and New Zealand (15%) both run real GST regimes, but
+    # the business isn't registered in either yet — so these default to 0%
+    # and an AU/NZ Tax Invoice renders as a legitimate zero-tax document
+    # until they're set. Deliberately NOT surfaced in `gst_config` below:
+    # that payload describes the Indian CGST/SGST split the storefront
+    # shows, and these are a single flat rate with no split.
+    gst_au_percent: float = Field(default=0.0, env="GST_AU_PERCENT")
+    gst_nz_percent: float = Field(default=0.0, env="GST_NZ_PERCENT")
+
+    def gst_rate_for_region(self, region: Optional[str]) -> float:
+        """Total tax percentage to charge for a tax region ("IN"/"AU"/"NZ").
+        Anything else is out of scope for tax entirely and gets 0."""
+        code = (region or "").strip().upper()
+        if code == "AU":
+            return self.gst_au_percent
+        if code == "NZ":
+            return self.gst_nz_percent
+        if code == "IN":
+            return self.gst_total_percent
+        return 0.0
     # Sterling silver jewellery = HSN 7113 (articles of jewellery of
     # precious metal). Confirm against your actual product classification —
     # imitation/fashion jewellery would be 7117 instead.
