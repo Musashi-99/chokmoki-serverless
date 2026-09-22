@@ -35,6 +35,7 @@ from src.pricing.geo_provider import GeoIPDiscoveryAdapter
 from src.pricing.resolvers import resolve_country
 from src.pricing.price_lookup import resolve_price
 from src.utils.region import is_india_address as _is_india_address
+from src.utils.region import is_supported_shipping_country as _is_supported_shipping_country
 
 # Shared breaker state (lives in Redis — see circuit_breaker.py) for every
 # outbound Razorpay call made from this service.
@@ -732,6 +733,31 @@ class OrderService:
             # reused here rather than re-deriving pricing logic.
             market_price = resolve_price(product.prices, order_country) if product.prices else None
             unit_price = money(market_price.sellingPrice) if market_price else money(product.price_inr)
+            # Cross-check the resolved pricing bucket's currency against
+            # what the admin actually declared this order's destination to
+            # be (same IN->INR/AU->AUD/NZ->NZD/default->USD mapping
+            # _order_from_doc uses) — resolve_price silently falls back to
+            # a product's "default" (USD) bucket when it has no entry for
+            # order_country, which would otherwise let an admin order for,
+            # say, Australia get silently priced/labelled in USD. Admin
+            # orders aren't region-restricted (unlike storefront checkout),
+            # this only guards currency consistency.
+            # Only applies to products that actually have a `prices` array —
+            # legacy products with none at all are priced off `price_inr`
+            # directly (always INR) by design, regardless of order_country;
+            # that legacy path is out of scope here.
+            if product.prices:
+                expected_currency = self._LEGACY_CURRENCY_BY_COUNTRY.get(
+                    order_country, self._LEGACY_CURRENCY_BY_COUNTRY["default"]
+                )[0]
+                actual_currency = market_price.currency if market_price else "INR"
+                if actual_currency != expected_currency:
+                    raise ValueError(
+                        f"'{product.name}' has no price configured for the "
+                        f"{order_country} market (would be charged in "
+                        f"{actual_currency} instead of {expected_currency}) — "
+                        "please add that market's price or choose a different product."
+                    )
             if market_price and order_currency is None:
                 order_currency, order_currency_symbol = market_price.currency, market_price.sym
             validated_items.append(
@@ -1241,6 +1267,27 @@ class OrderService:
         region_audit = await self._resolve_region(order_data, ip, user_agent)
         country = region_audit.pricing_country_used
 
+        # Temporary storefront restriction: only India and Australia can
+        # place an order right now (COD included) — see
+        # settings.order_allowed_countries. Checked before any pricing/
+        # currency resolution below, and checked two ways: the resolved
+        # pricing/region country AND the shipping address's literal
+        # `country` free-text field, so neither a disallowed pricing
+        # bucket nor a mismatched literal shipping country (e.g.
+        # pricing country "AU" with a shipping address typed as "New
+        # Zealand") can slip an order through. This does NOT apply to
+        # create_from_admin, which stays open to any market.
+        order_allowed = {
+            c.strip().upper() for c in (settings.order_allowed_countries or "").split(",") if c.strip()
+        }
+        if country not in order_allowed or not _is_supported_shipping_country(
+            order_data.shippingAddress.country
+        ):
+            raise ValueError(
+                "We currently only accept orders shipping to India or Australia. "
+                "Other regions are temporarily unavailable — check back soon."
+            )
+
         # COD needs no payment gateway, so it's available from every market.
         # Paying online now (Razorpay) only works in INR today — reject that
         # combination early, before inventory/fraud work, with a message the
@@ -1301,6 +1348,30 @@ class OrderService:
             # "default" included (see scripts/migrate_market_prices.py).
             item_currency = market_price.currency if market_price else "INR"
             item_sym = market_price.sym if market_price else "₹"
+
+            # Guard against resolve_price silently falling back to the
+            # product's "default" (USD) bucket when it has no price entry
+            # for the destination country — that produced a real order/
+            # invoice priced and labelled in USD for an Australia-shipping
+            # order. Since checkout only accepts IN/AU (enforced above),
+            # the resolved item currency must actually match the country's
+            # expected currency, or the order must not proceed. Only
+            # applies to products that actually have a `prices` array —
+            # legacy products with none at all are priced off `price_inr`
+            # directly (always INR) by design, regardless of country, and
+            # that legacy path is out of scope here.
+            if product.prices:
+                expected_currency = self._LEGACY_CURRENCY_BY_COUNTRY.get(country, (None, None))[0]
+                if expected_currency and item_currency != expected_currency:
+                    if country == "AU":
+                        raise ValueError(
+                            f"'{product.name}' isn't available for shipping to Australia yet — "
+                            "please remove it from your cart or contact us."
+                        )
+                    raise ValueError(
+                        f"'{product.name}' isn't available for shipping to your destination yet — "
+                        "please remove it from your cart or contact us."
+                    )
 
             validated_items.append(ValidatedOrderItem(
                 product_id=str(product.id),

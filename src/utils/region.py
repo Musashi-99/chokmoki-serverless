@@ -32,3 +32,11 @@ def is_au_address(shipping_country: Optional[str]) -> bool:
 
 def is_nz_address(shipping_country: Optional[str]) -> bool:
     return (shipping_country or "").strip().lower() in NEW_ZEALAND_ADDRESS_NAMES
+
+
+def is_supported_shipping_country(shipping_country: Optional[str]) -> bool:
+    """Only India and Australia can currently place storefront orders (see
+    OrderService._validate_and_prepare_order / settings.order_allowed_countries)
+    — reuses the same two address-name sets so this can never drift from
+    what is_india_address/is_au_address already consider "India"/"Australia"."""
+    return is_india_address(shipping_country) or is_au_address(shipping_country)

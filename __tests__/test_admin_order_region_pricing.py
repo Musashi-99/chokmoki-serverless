@@ -141,16 +141,15 @@ class TestAdminOrderRegionPricing:
                 [order.items[0]], "AU"
             )
 
-    async def test_no_country_specific_row_falls_back_to_default(self, no_au_row_product):
+    async def test_no_country_specific_row_rejected_on_currency_mismatch(self, no_au_row_product):
+        """Regression for the real "AU shipping address, USD invoice" bug:
+        previously this silently fell back to the product's "default" (USD)
+        bucket and created an AU order priced/labelled in USD. Now that
+        fallback must be rejected instead of silently mismatching the
+        order's declared country and its actual currency."""
         service = OrderService()
-        database = await db.get_database()
-        order = await service.create_from_admin(_base_payload(str(no_au_row_product.id), "AU"))
-        try:
-            assert order.items[0].unit_price == 45
-            assert order.currency == "USD"
-            assert order.region_audit.pricing_country_used == "AU"
-        finally:
-            await database[ORDERS_COLLECTION].delete_one({"order_id": order.order_id})
+        with pytest.raises(ValueError, match="no price configured"):
+            await service.create_from_admin(_base_payload(str(no_au_row_product.id), "AU"))
 
     async def test_missing_country_in_payload_defaults_sanely_not_crash(self, multi_region_product):
         """Regression: an old-style payload omitting `country` (reachable

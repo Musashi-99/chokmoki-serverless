@@ -529,7 +529,7 @@ class TestOrderCurrencyPersistence:
     async def test_cod_order_from_australia_persists_the_products_resolved_currency(self):
         product = _catalog_product()
         product.prices = [
-            MarketPrice(country="default", sym="$", currency="USD", mrp=30, sellingPrice=25)
+            MarketPrice(country="AU", sym="$", currency="AUD", mrp=30, sellingPrice=25)
         ]
         au_region = RegionAudit(pricing_country_used="AU", selected_country="AU")
         order_data = OrderCreateInput(**_order_payload(paymentMethod="cod"))
@@ -537,10 +537,44 @@ class TestOrderCurrencyPersistence:
         with order_pipeline_mocks(product=product, region_audit=au_region):
             order = await OrderService().create(order_data)
 
-        assert order.currency == "USD"
+        assert order.currency == "AUD"
         assert order.currency_symbol == "$"
-        assert order.items[0].currency == "USD"
+        assert order.items[0].currency == "AUD"
         assert order.items[0].sym == "$"
+
+    @pytest.mark.asyncio
+    async def test_cod_order_from_australia_rejected_when_product_has_no_au_price(self):
+        """Regression for the real "AU shipping address, USD invoice" bug:
+        a product with only a "default" (USD) bucket and no AU-specific
+        price must NOT silently proceed for an AU order — resolve_price's
+        fallback to "default" previously let this through and produced a
+        Tax Invoice priced/labelled in USD for an Australian customer."""
+        product = _catalog_product()
+        product.prices = [
+            MarketPrice(country="default", sym="$", currency="USD", mrp=30, sellingPrice=25)
+        ]
+        au_region = RegionAudit(pricing_country_used="AU", selected_country="AU")
+        order_data = OrderCreateInput(
+            **_order_payload(
+                paymentMethod="cod",
+                shippingAddress={
+                    "email": "x@test.com",
+                    "full_name": "X",
+                    "phone": "9999999999",
+                    "address_line1": "a",
+                    "address_line2": "",
+                    "city": "c",
+                    "state": "s",
+                    "postal_code": "1",
+                    "country": "Australia",
+                    "is_default": False,
+                },
+            )
+        )
+
+        with order_pipeline_mocks(product=product, region_audit=au_region):
+            with pytest.raises(ValueError, match="isn't available for shipping to Australia"):
+                await OrderService().create(order_data)
 
     @pytest.mark.asyncio
     async def test_cod_order_from_india_persists_inr(self):

@@ -386,6 +386,15 @@ class Settings(BaseSettings):
     prepaid_enabled_countries: str = Field(
         default="IN", env="PREPAID_ENABLED_COUNTRIES"
     )
+    # Temporary storefront-checkout restriction: only these markets can place
+    # an order at all right now (COD included), regardless of payment method.
+    # NZ/default remain browsable/priceable (see supported_market_countries)
+    # but checkout is rejected — see OrderService._validate_and_prepare_order.
+    # This does NOT apply to admin-created manual orders (create_from_admin),
+    # which are a trusted internal path for any market.
+    order_allowed_countries: str = Field(
+        default="IN,AU", env="ORDER_ALLOWED_COUNTRIES"
+    )
 
     # Idempotency
     idempotency_enabled: bool = Field(default=True, env="IDEMPOTENCY_ENABLED")
