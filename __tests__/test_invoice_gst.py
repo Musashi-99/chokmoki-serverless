@@ -31,6 +31,81 @@ def test_intra_state_matches_wb_alias(monkeypatch):
     assert svc._is_intra_state({"shipping_address": {"state": "Maharashtra"}}) is False
 
 
+class TestIntraStateByPincode:
+    """A valid 6-digit Indian PIN code is India Post's own allocation —
+    stronger evidence than the free-text `state` field a customer typed —
+    so it takes precedence whenever the seller's home state is West
+    Bengal (state code "19"). 70-74 prefix = West Bengal, except the
+    737 (Sikkim) and 744 (Andaman & Nicobar) carve-outs."""
+
+    def _svc(self, monkeypatch):
+        from src.services import invoice_service
+
+        monkeypatch.setattr(invoice_service.settings, "invoice_seller_state", "West Bengal")
+        monkeypatch.setattr(invoice_service.settings, "invoice_seller_state_code", "19")
+        return InvoiceService()
+
+    def test_kolkata_pincode_is_intra_state_even_if_state_field_is_wrong(self, monkeypatch):
+        svc = self._svc(monkeypatch)
+        # State field is wrong/mistyped, but the PIN (Kolkata GPO) is
+        # unambiguous — PIN wins.
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "Maharashtra", "postal_code": "700001"}}
+        ) is True
+
+    def test_every_70_to_74_prefix_is_west_bengal_except_carve_outs(self, monkeypatch):
+        svc = self._svc(monkeypatch)
+        for prefix in ("700", "710", "721", "732", "743"):
+            assert svc._is_intra_state(
+                {"shipping_address": {"state": "", "postal_code": f"{prefix}001"}}
+            ) is True
+
+    def test_sikkim_737_prefix_is_not_west_bengal(self, monkeypatch):
+        svc = self._svc(monkeypatch)
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "West Bengal", "postal_code": "737101"}}
+        ) is False
+
+    def test_andaman_744_prefix_is_not_west_bengal(self, monkeypatch):
+        svc = self._svc(monkeypatch)
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "West Bengal", "postal_code": "744101"}}
+        ) is False
+
+    def test_non_wb_pincode_with_wb_state_field_is_inter_state(self, monkeypatch):
+        svc = self._svc(monkeypatch)
+        # Mumbai PIN, but state field says West Bengal — PIN wins, so
+        # this is IGST (inter-state), not CGST+SGST.
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "West Bengal", "postal_code": "400001"}}
+        ) is False
+
+    def test_missing_or_invalid_pincode_falls_back_to_state_name(self, monkeypatch):
+        svc = self._svc(monkeypatch)
+        assert svc._is_intra_state({"shipping_address": {"state": "WB", "postal_code": ""}}) is True
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "WB", "postal_code": "12345"}}
+        ) is True
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "Maharashtra", "postal_code": "not-a-pincode"}}
+        ) is False
+
+    def test_pincode_rule_does_not_apply_when_seller_is_not_west_bengal(self, monkeypatch):
+        from src.services import invoice_service
+
+        monkeypatch.setattr(invoice_service.settings, "invoice_seller_state", "Maharashtra")
+        monkeypatch.setattr(invoice_service.settings, "invoice_seller_state_code", "27")
+        svc = InvoiceService()
+        # A Kolkata PIN here is irrelevant — seller isn't in West Bengal,
+        # so this must fall back to plain state-name comparison.
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "Maharashtra", "postal_code": "700001"}}
+        ) is True
+        assert svc._is_intra_state(
+            {"shipping_address": {"state": "West Bengal", "postal_code": "700001"}}
+        ) is False
+
+
 def test_cgst_sgst_remainder_sums_to_tax(monkeypatch):
     from src.services import invoice_service
 

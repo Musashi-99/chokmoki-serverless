@@ -195,6 +195,130 @@ class TestIndiaGstUntouchedByAuNzChange:
         assert au_rows[0]["hsn"] == ""
 
 
+class TestTaxInvoiceHeaderColumnsAtZeroRate:
+    """The actual bug: a "TAX INVOICE" for AU/NZ at the current 0% default
+    rate must still render a stated GST column ("GST (0%)") and the
+    "Total (Incl. GST)" label — not silently fall back to the bare,
+    tax-less 5-column layout that makes it indistinguishable from a plain
+    receipt. bill_of_supply must keep behaving exactly as before (no tax
+    columns, ever), and receipts are unaffected by this change too."""
+
+    def test_au_tax_invoice_shows_gst_column_at_zero_rate(self):
+        service = InvoiceService()
+        show_tax, show_india_tax, show_flat_tax, headers, _widths = service._tax_table_columns(
+            doc_type="tax_invoice",
+            tax_region="AU",
+            is_india=False,
+            intra=False,
+            tax_rate=0.0,
+            currency_sym="$",
+            currency_code="AUD",
+        )
+        assert show_tax is True
+        assert show_flat_tax is True
+        assert show_india_tax is False
+        assert any(h.startswith("GST (0") for h in headers)
+        assert "Total (Incl. GST)" in headers
+        assert not any(h.startswith("Total (AUD)") for h in headers)
+
+    def test_nz_tax_invoice_shows_gst_column_at_zero_rate(self):
+        service = InvoiceService()
+        _show_tax, _show_india_tax, show_flat_tax, headers, _widths = service._tax_table_columns(
+            doc_type="tax_invoice",
+            tax_region="NZ",
+            is_india=False,
+            intra=False,
+            tax_rate=0.0,
+            currency_sym="$",
+            currency_code="NZD",
+        )
+        assert show_flat_tax is True
+        assert any(h.startswith("GST (0") for h in headers)
+        assert "Total (Incl. GST)" in headers
+
+    def test_au_tax_invoice_at_configured_nonzero_rate_shows_that_rate(self):
+        service = InvoiceService()
+        _show_tax, _show_india_tax, show_flat_tax, headers, _widths = service._tax_table_columns(
+            doc_type="tax_invoice",
+            tax_region="AU",
+            is_india=False,
+            intra=False,
+            tax_rate=10.0,
+            currency_sym="$",
+            currency_code="AUD",
+        )
+        assert show_flat_tax is True
+        assert "GST (10%)" in headers
+
+    def test_receipt_at_zero_rate_is_unaffected_bare_layout(self):
+        """Only tax_invoice gets the "always show tax columns" behavior —
+        a receipt at the AU/NZ default 0% rate keeps rendering the plain,
+        no-tax-column layout exactly as before this change."""
+        service = InvoiceService()
+        show_tax, _show_india_tax, show_flat_tax, headers, _widths = service._tax_table_columns(
+            doc_type="receipt",
+            tax_region="AU",
+            is_india=False,
+            intra=False,
+            tax_rate=0.0,
+            currency_sym="$",
+            currency_code="AUD",
+        )
+        assert show_tax is False
+        assert show_flat_tax is False
+        assert headers == ["S.No", "Product", "Qty", "Unit Price ($)", "Total (AUD)"]
+
+    def test_bill_of_supply_never_shows_tax_columns_even_for_au(self):
+        service = InvoiceService()
+        show_tax, _show_india_tax, show_flat_tax, headers, _widths = service._tax_table_columns(
+            doc_type="bill_of_supply",
+            tax_region="AU",
+            is_india=False,
+            intra=False,
+            tax_rate=0.0,
+            currency_sym="$",
+            currency_code="AUD",
+        )
+        assert show_tax is False
+        assert show_flat_tax is False
+        assert not any("GST" in h for h in headers)
+
+    def test_india_intra_state_tax_invoice_headers_unaffected(self):
+        service = InvoiceService()
+        show_tax, show_india_tax, show_flat_tax, headers, _widths = service._tax_table_columns(
+            doc_type="tax_invoice",
+            tax_region="IN",
+            is_india=True,
+            intra=True,
+            tax_rate=3.0,
+            currency_sym="₹",
+            currency_code="INR",
+        )
+        assert show_tax is True
+        assert show_india_tax is True
+        assert show_flat_tax is False
+        assert any(h.startswith("CGST") for h in headers)
+        assert any(h.startswith("SGST") for h in headers)
+        assert "Total (Incl. GST)" in headers
+
+    def test_india_inter_state_tax_invoice_headers_unaffected(self):
+        service = InvoiceService()
+        show_tax, show_india_tax, show_flat_tax, headers, _widths = service._tax_table_columns(
+            doc_type="tax_invoice",
+            tax_region="IN",
+            is_india=True,
+            intra=False,
+            tax_rate=3.0,
+            currency_sym="₹",
+            currency_code="INR",
+        )
+        assert show_tax is True
+        assert show_india_tax is True
+        assert show_flat_tax is False
+        assert any(h.startswith("IGST") for h in headers)
+        assert "Total (Incl. GST)" in headers
+
+
 class TestGstRateForRegionHelper:
     def test_gst_rate_for_region_in_is_gst_total_percent(self):
         from src.config import settings

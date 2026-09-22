@@ -23,6 +23,7 @@ event loop.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -166,6 +167,34 @@ def gst_state_code(value: str) -> str:
     return GST_STATE_CODES.get(key, "")
 
 
+# West Bengal PIN codes (India Post's own allocation, per the national PIN
+# code scheme): the 1st digit "7" is the Eastern postal zone, and the 2nd
+# digit 0-4 narrows that zone down to the West Bengal postal circle. This
+# is a stronger, harder-to-typo signal than the free-text `state` field a
+# customer fills in at checkout, so it's used to cross-check/override that
+# field in _is_intra_state below — but only for West Bengal specifically,
+# since that's the only state we have a verified prefix range for (the
+# seller's home state; see settings.invoice_seller_state_code).
+_WEST_BENGAL_PINCODE_PREFIXES = {"70", "71", "72", "73", "74"}
+# Two carve-outs inside that 70-74 range that actually belong to other
+# states/UTs, not West Bengal: 737xxx is Sikkim, 744xxx is Andaman &
+# Nicobar Islands. Every other 70-74 prefix is West Bengal.
+_WEST_BENGAL_PINCODE_EXCEPTIONS = {"737", "744"}
+
+
+def _is_west_bengal_pincode(postal_code: Optional[str]) -> bool:
+    digits = re.sub(r"\D", "", str(postal_code or ""))
+    if len(digits) != 6:
+        return False
+    if digits[:3] in _WEST_BENGAL_PINCODE_EXCEPTIONS:
+        return False
+    return digits[:2] in _WEST_BENGAL_PINCODE_PREFIXES
+
+
+def _is_valid_india_pincode(postal_code: Optional[str]) -> bool:
+    return len(re.sub(r"\D", "", str(postal_code or ""))) == 6
+
+
 DOC_TITLES = {
     "tax_invoice": "TAX INVOICE",
     "receipt": "PAYMENT RECEIPT",
@@ -300,12 +329,27 @@ class InvoiceService:
         return self.is_india_order(order_doc) or self._tax_region(order_doc) in ("AU", "NZ")
 
     def _is_intra_state(self, order_doc: Dict[str, Any]) -> bool:
-        customer_state = (order_doc.get("shipping_address") or {}).get("state") or ""
+        shipping_address = order_doc.get("shipping_address") or {}
+        customer_state = shipping_address.get("state") or ""
         seller_state = settings.invoice_seller_state
-        customer_code = gst_state_code(customer_state)
         seller_code = (settings.invoice_seller_state_code or "").strip() or gst_state_code(
             seller_state
         )
+
+        # PIN code is India Post's own allocation, not free text a customer
+        # typed into a form field — prefer it over the `state` field
+        # whenever the seller's home state is West Bengal (state code
+        # "19") and a valid 6-digit Indian PIN is present. This is
+        # currently the only state we have a verified PIN-prefix range
+        # for (see _WEST_BENGAL_PINCODE_PREFIXES above), so it only
+        # overrides the state-name check for that specific case — for any
+        # other configured seller state, fall through to the state-name
+        # comparison exactly as before.
+        postal_code = shipping_address.get("postal_code") or ""
+        if seller_code == "19" and _is_valid_india_pincode(postal_code):
+            return _is_west_bengal_pincode(postal_code)
+
+        customer_code = gst_state_code(customer_state)
         if customer_code and seller_code:
             return customer_code == seller_code
         return _norm_state(customer_state) == _norm_state(seller_state)
@@ -337,6 +381,13 @@ class InvoiceService:
             else Decimal("0")
         )
         split_tax = doc_type != "bill_of_supply" and rate > 0
+        # NOTE: at rate == 0 this is numerically a no-op either way —
+        # taxable = net / (1 + 0) = net and tax_amount = net - net = 0,
+        # identical to the split_tax=False branch below — so a 0% AU/NZ
+        # tax_invoice already produces correct (zero) row values without
+        # needing split_tax forced on here. The bug that made a 0%-rate
+        # tax_invoice look like a plain receipt was purely in build_pdf's
+        # header/column selection (`show_tax`), not in this per-row math.
         # Only India splits the tax into CGST+SGST / IGST; AU/NZ GST is a
         # single line, so it gets its own `gst` field per row rather than
         # overloading `igst` with something that isn't an integrated tax.
@@ -577,28 +628,15 @@ class InvoiceService:
         rows = self._tax_lines(order_doc, doc_type)
         intra = self._is_intra_state(order_doc)
         tax_rate = settings.gst_rate_for_region(tax_region) if settings.gst_enabled else 0.0
-        # A tax document only grows tax columns when there is actually a
-        # rate to show — an AU/NZ Tax Invoice at the current 0% default is
-        # a legitimate zero-tax document and renders like a plain one.
-        show_tax = doc_type != "bill_of_supply" and tax_rate > 0
-        show_india_tax = show_tax and is_india
-        show_flat_tax = show_tax and not is_india
-        if show_india_tax and intra:
-            headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
-                       f"CGST ({settings.gst_cgst_percent}%)", f"SGST ({settings.gst_sgst_percent}%)", "Total (Incl. GST)"]
-            widths = [0.05, 0.29, 0.07, 0.05, 0.11, 0.13, 0.10, 0.10, 0.10]
-        elif show_india_tax:
-            headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
-                       f"IGST ({self._fmt_rate(settings.gst_total_percent)}%)", "Total (Incl. GST)"]
-            widths = [0.05, 0.34, 0.08, 0.05, 0.12, 0.14, 0.10, 0.12]
-        elif show_flat_tax:
-            # AU/NZ: one flat GST column, no HSN (an Indian classification).
-            headers = ["S.No", "Product", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
-                       f"GST ({self._fmt_rate(tax_rate)}%)", "Total (Incl. GST)"]
-            widths = [0.05, 0.37, 0.06, 0.13, 0.14, 0.11, 0.14]
-        else:
-            headers = ["S.No", "Product", "Qty", f"Unit Price ({currency_sym})", f"Total ({currency_code})"]
-            widths = [0.06, 0.52, 0.08, 0.16, 0.18]
+        show_tax, show_india_tax, show_flat_tax, headers, widths = self._tax_table_columns(
+            doc_type=doc_type,
+            tax_region=tax_region,
+            is_india=is_india,
+            intra=intra,
+            tax_rate=tax_rate,
+            currency_sym=currency_sym,
+            currency_code=currency_code,
+        )
         widths = [w * (page_w - 2 * margin) for w in widths]
 
         def table_row(values: List[str], yy: float, *, bold: bool = False) -> float:
@@ -674,6 +712,13 @@ class InvoiceService:
                     fmt_money(totals["gst"]),
                     y,
                 )
+                # TODO(human/legal review): at tax_rate == 0 this is a
+                # nil-rated AU/NZ tax invoice (not yet GST-registered
+                # there). Consider a one-line clarifying note here (e.g.
+                # "Not yet registered for GST in Australia/New Zealand")
+                # once someone who can sign off on the exact wording for
+                # AU/NZ tax-invoice compliance confirms it — not adding
+                # invented legal-sounding text here.
             elif intra:
                 y = total_line(f"CGST @ {settings.gst_cgst_percent}%:", fmt_money(cgst_total), y)
                 y = total_line(f"SGST @ {settings.gst_sgst_percent}%:", fmt_money(sgst_total), y)
@@ -744,3 +789,53 @@ class InvoiceService:
     @staticmethod
     def _fmt_rate(value: float) -> str:
         return str(int(value)) if float(value).is_integer() else str(value)
+
+    def _tax_table_columns(
+        self,
+        *,
+        doc_type: str,
+        tax_region: str,
+        is_india: bool,
+        intra: bool,
+        tax_rate: float,
+        currency_sym: str,
+        currency_code: str,
+    ):
+        """Picks the items-table headers/column widths and the tax-column
+        gating flags. Pulled out of build_pdf so the header-selection logic
+        (the thing that was bugged — see show_tax below) can be unit
+        tested directly against header text, without rendering a PDF.
+
+        A document titled "TAX INVOICE" must always state its tax position
+        explicitly — even a 0% (nil-rated) AU/NZ rate before GST
+        registration is a real tax position, not the absence of one. So a
+        tax_invoice for a region we actually operate a GST regime in
+        (IN/AU/NZ — is_tax_invoice_eligible already guarantees this by the
+        time build_pdf gets here) always grows the tax column(s),
+        regardless of the resolved rate. Receipts are unaffected: they
+        only grow tax columns when there's a nonzero rate to show, same as
+        before. bill_of_supply never shows tax — that's the point of the
+        doc type (e.g. a composition-scheme dealer) — untouched.
+        """
+        show_tax = doc_type != "bill_of_supply" and (
+            tax_rate > 0 or (doc_type == "tax_invoice" and tax_region in ("IN", "AU", "NZ"))
+        )
+        show_india_tax = show_tax and is_india
+        show_flat_tax = show_tax and not is_india
+        if show_india_tax and intra:
+            headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
+                       f"CGST ({settings.gst_cgst_percent}%)", f"SGST ({settings.gst_sgst_percent}%)", "Total (Incl. GST)"]
+            widths = [0.05, 0.29, 0.07, 0.05, 0.11, 0.13, 0.10, 0.10, 0.10]
+        elif show_india_tax:
+            headers = ["S.No", "Product", "HSN", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
+                       f"IGST ({self._fmt_rate(settings.gst_total_percent)}%)", "Total (Incl. GST)"]
+            widths = [0.05, 0.34, 0.08, 0.05, 0.12, 0.14, 0.10, 0.12]
+        elif show_flat_tax:
+            # AU/NZ: one flat GST column, no HSN (an Indian classification).
+            headers = ["S.No", "Product", "Qty", f"Unit Price ({currency_sym})", "Taxable Value",
+                       f"GST ({self._fmt_rate(tax_rate)}%)", "Total (Incl. GST)"]
+            widths = [0.05, 0.37, 0.06, 0.13, 0.14, 0.11, 0.14]
+        else:
+            headers = ["S.No", "Product", "Qty", f"Unit Price ({currency_sym})", f"Total ({currency_code})"]
+            widths = [0.06, 0.52, 0.08, 0.16, 0.18]
+        return show_tax, show_india_tax, show_flat_tax, headers, widths
