@@ -24,9 +24,26 @@ ORDERS_COLLECTION = "orders"
 
 @pytest.fixture(autouse=True)
 def _reset_mongo_singleton_per_test():
+    # Mongo's singleton was already reset here, but the Redis singleton
+    # (src/database/redis_connection.py) wasn't — since it's a process-wide
+    # client bound to whichever event loop was active when it first
+    # connected, and this file's tests each get a fresh event loop
+    # (pytest.ini: asyncio_default_fixture_loop_scope=function), any test
+    # after the first one to touch Redis (e.g. create_from_admin's fraud
+    # check, which uses Redis-backed enrichment) would intermittently hit
+    # "Event loop is closed" and fail closed as a rejected order — a
+    # flaky, order-dependent failure unrelated to whatever that test is
+    # actually asserting. Other test files in this suite already reset
+    # both singletons the same way (see test_admin_create_order_region_scope.py).
+    from src.database.redis_connection import redis_client as _redis_client
+
     db._client = None
+    _redis_client._client = None
+    _redis_client._connection_pool = None
     yield
     db._client = None
+    _redis_client._client = None
+    _redis_client._connection_pool = None
 
 
 def _unique_slug() -> str:
