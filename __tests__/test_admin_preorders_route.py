@@ -105,6 +105,7 @@ def _doc(_id="507f1f77bcf86cd799439011", region="AU", status="new"):
         "notify_via": ["email"],
         "message": "",
         "status": status,
+        "ip": "103.59.73.243",
         "created_at": datetime(2026, 1, 1),
         "updated_at": datetime(2026, 1, 1),
     }
@@ -163,6 +164,34 @@ class TestAdminListRegionScoping:
         # allowed set, never IN itself, and never None (unrestricted).
         assert mock_list.call_args.kwargs["regions"] == ["AU"]
         assert mock_list.call_args.kwargs["region"] is None
+
+    def test_list_response_includes_submitter_ip(self, api_module):
+        """Regression: an admin needs the submitter's IP to diagnose a
+        region mismatch (e.g. a customer who selected AU on the storefront
+        but whose stored `region` came back "IN" because the client never
+        sent selectedCountry at all, so resolution fell through to pure
+        GeoIP) — public_row() must not strip `ip` from the admin response,
+        only from what the public POST endpoint itself returns."""
+        principal = _principal(regions=frozenset({"AU"}))
+        _override(api_module, principal)
+        try:
+            with (
+                patch("api.routes.admin_preorders.cache", None),
+                patch(
+                    "api.routes.admin_preorders.PreorderService.list", new_callable=AsyncMock
+                ) as mock_list,
+                patch(
+                    "api.routes.admin_preorders.PreorderService.count", new_callable=AsyncMock
+                ) as mock_count,
+            ):
+                mock_list.return_value = [_doc()]
+                mock_count.return_value = 1
+                client = TestClient(api_module.app, raise_server_exceptions=True)
+                response = client.get("/api/admin/preorders")
+        finally:
+            _clear_override(api_module)
+        assert response.status_code == 200
+        assert response.json()["data"][0]["ip"] == "103.59.73.243"
 
     def test_root_admin_sees_everything_unrestricted(self, api_module):
         principal = _principal(
@@ -306,5 +335,5 @@ class TestCsvExportRegionScoping:
         assert mock_list.call_args.kwargs["regions"] == ["AU"]
         assert mock_list.call_args.kwargs["region"] is None
         body = response.text
-        assert "name,email,phone,product_name,quantity,size,notify_via,message,status,region,created_at" in body
+        assert "name,email,phone,product_name,quantity,size,notify_via,message,status,region,ip,created_at" in body
         assert "Jane Doe" in body

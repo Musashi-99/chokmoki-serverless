@@ -181,7 +181,7 @@ async def admin_export_preorders_csv(
 
     columns = [
         "name", "email", "phone", "product_name", "quantity", "size",
-        "notify_via", "message", "status", "region", "created_at",
+        "notify_via", "message", "status", "region", "ip", "created_at",
     ]
 
     def generate():
@@ -204,6 +204,7 @@ async def admin_export_preorders_csv(
                 row.get("message"),
                 row.get("status"),
                 row.get("region"),
+                row.get("ip"),
                 row.get("created_at").isoformat() if row.get("created_at") else "",
             ])
             yield buffer.getvalue()

@@ -261,9 +261,16 @@ def _parse_filter_datetime(value: str, *, end_of_day: bool = False) -> datetime:
 
 
 def public_row(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """The admin-list/status-update projection — internal fields (ip,
-    user_agent) stay out of the API response, same posture as
-    abandoned_cart_service.py's _public_row."""
+    """The admin-list/status-update/export projection. Despite the name
+    (kept for parity with abandoned_cart_service.py's _public_row, and
+    because this function only actually feeds admin routes — the public
+    POST /api/preorders response never calls it, it just returns
+    {id, status}), it now DOES include `ip` — an admin needs it to
+    diagnose exactly the class of bug that motivated this: a submission
+    whose stored `region` doesn't match what the customer says they
+    selected. `user_agent` stays out; there's no established admin need
+    for it yet and it's not what actually helps diagnose a region
+    mismatch."""
     return {
         "_id": str(doc.get("_id")),
         "product_id": doc.get("product_id"),
@@ -278,6 +285,7 @@ def public_row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "notify_via": doc.get("notify_via") or [],
         "message": doc.get("message") or "",
         "status": doc.get("status") or "new",
+        "ip": doc.get("ip"),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
     }
