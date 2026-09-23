@@ -39,6 +39,25 @@ rules:
         window: 1h
         burst: 5
 
+  # Public pre-order form (region is pre-order-only, e.g. AU). Same
+  # two-bucket shape as `orders` — a legitimate resubmission (typo fix,
+  # quantity change) is an upsert, not a new row, so this can afford to be
+  # about as generous as checkout itself.
+  - id: preorders
+    match:
+      methods: [POST]
+      paths: [/api/preorders]
+    buckets:
+      - scope: ip
+        rate: 30
+        window: 1h
+        burst: 10
+      - scope: email
+        field: email
+        rate: 10
+        window: 1h
+        burst: 5
+
   # "My Orders" lookup (email + phone, no account/auth). Tight cap — this
   # is the one public endpoint that returns another person's order data if
   # both fields are guessed, so it needs to resist brute-forcing far more

@@ -90,6 +90,8 @@ try:
     from src.models.inbox import ContactSubmissionCreate, NewsletterSubscribeCreate
     from src.models.abandoned_cart import AbandonedCartRecordInput
     from src.services.abandoned_cart_service import AbandonedCartService
+    from src.models.preorder import PreorderCreateInput
+    from src.services.preorder_service import PreorderService
     from src.services.cache_service import cache
     from src.services.import_service import (
         BundleParseError,
@@ -223,6 +225,8 @@ except Exception as e:
     NewsletterSubscribeCreate = None
     AbandonedCartRecordInput = None
     AbandonedCartService = None
+    PreorderCreateInput = None
+    PreorderService = None
     cache = None
     AuthorizationError = None
     MFACodeRequired = None
