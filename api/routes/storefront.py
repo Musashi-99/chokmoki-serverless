@@ -156,14 +156,23 @@ async def api_get_product(slug: str, request: Request):
 
 
 def _og_meta_html(*, title: str, description: str, image: Optional[str], canonical_url: str) -> str:
-    """Minimal static HTML — just the tags a link-preview crawler reads,
-    plus a meta-refresh so a real person who actually clicks through lands
-    on the real React page instead of this bare snippet. Not the SPA:
-    WhatsApp/Discord/Facebook/etc.'s scrapers never execute JS, so this is
-    the only way they ever see real per-product content (see nginx's
-    $chokmoki_og_bot map, which routes ONLY known bot user-agents to this
-    endpoint for /product/<slug> — everyone else gets the normal app,
-    unchanged)."""
+    """Minimal static HTML — just the tags a link-preview crawler reads.
+    Not the SPA: WhatsApp/Discord/Facebook/etc.'s scrapers never execute
+    JS, so this is the only way they ever see real per-product content
+    (see nginx's $chokmoki_og_bot map, which routes ONLY known bot
+    user-agents to this endpoint for /product/<slug> — everyone else
+    gets the normal app, unchanged).
+
+    Deliberately NO <meta http-equiv="refresh">: a real person never
+    lands here at all (their own browser's user-agent doesn't match the
+    bot map, so nginx never routes them to this endpoint — they go
+    straight to the real SPA when they click through). A refresh tag
+    only risked WhatsApp's scraper following it as a redirect and
+    re-scraping the plain app shell instead of using these tags —
+    confirmed live: WhatsApp's preview showed the generic site title/
+    domain instead of the real product title, while Discord (which
+    doesn't follow it) showed everything correctly from the exact same
+    response."""
     t = _html_escape(title)
     d = _html_escape(description)
     u = _html_escape(canonical_url)
@@ -190,7 +199,6 @@ def _og_meta_html(*, title: str, description: str, image: Optional[str], canonic
     <meta property="og:url" content="{u}">
     <meta property="og:site_name" content="Chokmoki">
     {image_tags}
-    <meta http-equiv="refresh" content="0; url={u}">
 </head>
 <body>
     <p><a href="{u}">{t}</a></p>
@@ -224,11 +232,15 @@ async def api_og_product(slug: str):
         # A deleted/deactivated product's link should show as "gone", not
         # stale wrong info — generic site branding + 404, same posture as
         # the prerendered 404 snapshot the storefront itself falls back to
-        # for a genuinely missing route.
+        # for a genuinely missing route. The brand logo here is a static
+        # public/ file (android-chrome-512x512.png, never content-hashed
+        # by the frontend build, unlike the fingerprinted files under
+        # /assets/) — a fixed URL that keeps working across frontend
+        # deploys, and a plain file read, no image-resize compute.
         html = _og_meta_html(
             title="Chokmoki — Sterling Silver Jewellery",
             description="This piece is no longer available. Explore the current collection at Chokmoki.",
-            image=None,
+            image=f"{settings.frontend_url}/android-chrome-512x512.png",
             canonical_url=f"{settings.frontend_url}/products",
         )
         return HTMLResponse(content=html, status_code=404)

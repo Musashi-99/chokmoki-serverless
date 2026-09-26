@@ -79,6 +79,9 @@ async def test_deleted_or_missing_product_returns_404_with_generic_fallback_and_
         assert response.status_code == 404
         body = response.body.decode()
         assert "no longer available" in body.lower()
+        # Stable static file (public/, never content-hashed) — a real
+        # fallback image instead of no image at all for a dead link.
+        assert "android-chrome-512x512.png" in body
         mock_cache.set.assert_not_awaited()
 
 
@@ -162,3 +165,24 @@ async def test_title_and_description_are_html_escaped():
         body = response.body.decode()
         assert "<script>alert(1)</script>" not in body
         assert "&lt;script&gt;" in body
+
+
+@pytest.mark.asyncio
+async def test_no_meta_refresh_tag():
+    """Regression: a <meta http-equiv="refresh"> here was actively
+    harmful, not just unnecessary — a real person never lands on this
+    endpoint at all (nginx only routes known bot user-agents to it,
+    never a real browser's), but WhatsApp's scraper was confirmed live
+    to follow it as a redirect and re-scrape the plain app shell instead
+    of using these tags — its preview showed the generic site title/
+    domain rather than the real product, while Discord (which ignores
+    the tag) showed everything correctly from the exact same response."""
+    with patch("api.routes.storefront.cache") as mock_cache, \
+         patch("api.routes.storefront.ProductService") as mock_service_cls:
+        mock_cache.get = AsyncMock(return_value=None)
+        mock_cache.set = AsyncMock()
+        mock_service_cls.return_value.get_by_slug = AsyncMock(return_value=_product())
+
+        response = await api_og_product("eternal-heart-solitaire-ring")
+
+        assert "http-equiv" not in response.body.decode().lower()
