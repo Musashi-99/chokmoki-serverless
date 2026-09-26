@@ -1,7 +1,8 @@
 """Public, read-only storefront content endpoints (no auth)."""
+from html import escape as _html_escape
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import json
 from api.bootstrap import AccountPageSettingsService, BlogService, CategoryService, CollectionSlideService, ContactPageSettingsService, FAQItemService, GeoIPDiscoveryAdapter, HeroConfigService, HistoryPageSettingsService, HomePageSettingsService, NavigationSettingsService, PolicyContentService, ProductPageSettingsService, ProductService, ShopPageSettingsService, SiteAssetService, StoryPageSettingsService, StudioSettingsService, TestimonialService, cache, get_client_ip, settings
 from api.json_utils import JSONEncoder, _json_dumps, _json_response_content
@@ -152,6 +153,101 @@ async def api_get_product(slug: str, request: Request):
         await cache.set(cache_key, _json_dumps(result), 300)
 
     return JSONResponse(content=result)
+
+
+def _og_meta_html(*, title: str, description: str, image: Optional[str], canonical_url: str) -> str:
+    """Minimal static HTML — just the tags a link-preview crawler reads,
+    plus a meta-refresh so a real person who actually clicks through lands
+    on the real React page instead of this bare snippet. Not the SPA:
+    WhatsApp/Discord/Facebook/etc.'s scrapers never execute JS, so this is
+    the only way they ever see real per-product content (see nginx's
+    $chokmoki_og_bot map, which routes ONLY known bot user-agents to this
+    endpoint for /product/<slug> — everyone else gets the normal app,
+    unchanged)."""
+    t = _html_escape(title)
+    d = _html_escape(description)
+    u = _html_escape(canonical_url)
+    image_tags = ""
+    if image:
+        img = _html_escape(image)
+        image_tags = (
+            f'<meta property="og:image" content="{img}">\n'
+            f'    <meta name="twitter:image" content="{img}">\n'
+            f'    <meta name="twitter:card" content="summary_large_image">'
+        )
+    else:
+        image_tags = '<meta name="twitter:card" content="summary">'
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{t}</title>
+    <meta name="description" content="{d}">
+    <link rel="canonical" href="{u}">
+    <meta property="og:type" content="product">
+    <meta property="og:title" content="{t}">
+    <meta property="og:description" content="{d}">
+    <meta property="og:url" content="{u}">
+    <meta property="og:site_name" content="Chokmoki">
+    {image_tags}
+    <meta http-equiv="refresh" content="0; url={u}">
+</head>
+<body>
+    <p><a href="{u}">{t}</a></p>
+</body>
+</html>"""
+
+
+OG_CACHE_TTL_SECONDS = 600  # 10 min — bounds DB load on a viral share
+# without meaningfully delaying how fast an edited/deleted product's
+# preview goes stale, unlike a build-time-baked snapshot (which would
+# only ever update on the next deploy).
+
+
+@router.get("/api/og/product/{slug}", response_class=HTMLResponse)
+async def api_og_product(slug: str):
+    """Live, per-request OG tags for a product — see _og_meta_html's
+    docstring for why this exists and who actually hits it. Queries the
+    real database (via a short cache-aside, not baked at build/deploy
+    time), so a product that's edited or deactivated/deleted is reflected
+    here within OG_CACHE_TTL_SECONDS, not "since the last deploy"."""
+    cache_key = f"chokmoki:og:product:{slug}"
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            return HTMLResponse(content=cached, status_code=200)
+
+    product = await ProductService().get_by_slug(slug) if ProductService else None
+    canonical_url = f"{settings.frontend_url}/product/{slug}"
+
+    if not product or not product.active:
+        # A deleted/deactivated product's link should show as "gone", not
+        # stale wrong info — generic site branding + 404, same posture as
+        # the prerendered 404 snapshot the storefront itself falls back to
+        # for a genuinely missing route.
+        html = _og_meta_html(
+            title="Chokmoki — Sterling Silver Jewellery",
+            description="This piece is no longer available. Explore the current collection at Chokmoki.",
+            image=None,
+            canonical_url=f"{settings.frontend_url}/products",
+        )
+        return HTMLResponse(content=html, status_code=404)
+
+    description = (product.description or "").strip()
+    if len(description) > 300:
+        description = description[:297].rstrip() + "..."
+    if not description:
+        description = f"{product.name} — 92.5 sterling silver, handcrafted by Chokmoki in Kolkata."
+
+    html = _og_meta_html(
+        title=f"{product.name} — Chokmoki",
+        description=description,
+        image=product.thumbnail or None,
+        canonical_url=canonical_url,
+    )
+    if cache:
+        await cache.set(cache_key, html, OG_CACHE_TTL_SECONDS)
+    return HTMLResponse(content=html, status_code=200)
 
 
 @router.get("/api/categories")
