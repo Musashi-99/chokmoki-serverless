@@ -155,6 +155,17 @@ async def api_get_product(slug: str, request: Request):
     return JSONResponse(content=result)
 
 
+def _brand_logo_url() -> str:
+    """The stable, once-uploaded R2 logo (chokmoki/branding/logo-512.png,
+    under whatever key prefix this environment configures) used as a
+    generic-branding og:image fallback — see api_og_product's 404 case.
+    Not a frontend build asset (those under /assets/ are content-hashed
+    and change every deploy) and not resized/generated per request."""
+    prefix = (settings.r2_key_prefix or "").strip("/")
+    key = "/".join(p for p in (prefix, "branding", "logo-512.png") if p)
+    return f"{settings.r2_public_base_url.rstrip('/')}/{key}"
+
+
 def _og_meta_html(*, title: str, description: str, image: Optional[str], canonical_url: str) -> str:
     """Minimal static HTML — just the tags a link-preview crawler reads.
     Not the SPA: WhatsApp/Discord/Facebook/etc.'s scrapers never execute
@@ -232,15 +243,14 @@ async def api_og_product(slug: str):
         # A deleted/deactivated product's link should show as "gone", not
         # stale wrong info — generic site branding + 404, same posture as
         # the prerendered 404 snapshot the storefront itself falls back to
-        # for a genuinely missing route. The brand logo here is a static
-        # public/ file (android-chrome-512x512.png, never content-hashed
-        # by the frontend build, unlike the fingerprinted files under
-        # /assets/) — a fixed URL that keeps working across frontend
-        # deploys, and a plain file read, no image-resize compute.
+        # for a genuinely missing route. Uploaded once to R2 under a fixed
+        # key (same asset the frontend's index.html og:image uses, for the
+        # same "stable, survives every deploy" reason), not resized/
+        # generated per-request.
         html = _og_meta_html(
             title="Chokmoki — Sterling Silver Jewellery",
             description="This piece is no longer available. Explore the current collection at Chokmoki.",
-            image=f"{settings.frontend_url}/android-chrome-512x512.png",
+            image=_brand_logo_url(),
             canonical_url=f"{settings.frontend_url}/products",
         )
         return HTMLResponse(content=html, status_code=404)

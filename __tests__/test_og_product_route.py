@@ -81,7 +81,7 @@ async def test_deleted_or_missing_product_returns_404_with_generic_fallback_and_
         assert "no longer available" in body.lower()
         # Stable static file (public/, never content-hashed) — a real
         # fallback image instead of no image at all for a dead link.
-        assert "android-chrome-512x512.png" in body
+        assert "branding/logo-512.png" in body
         mock_cache.set.assert_not_awaited()
 
 
