@@ -7,6 +7,7 @@ from api.bootstrap import AdminPrincipal, CategoryService, JewelryCategoryCreate
 from api.json_utils import JSONEncoder
 from src.models.region import normalize_region_codes
 from src.security.abac import is_allowed
+from src.services.facebook_catalog_service import FacebookCatalogError, FacebookCatalogService
 
 router = APIRouter()
 
@@ -186,6 +187,26 @@ async def admin_update_product(
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
+
+
+@router.post("/api/admin/products/{product_id}/facebook-sync")
+async def admin_sync_product_to_facebook(
+    product_id: str, email: str = Depends(require_scope_email("products", "write"))
+):
+    """Push one product into the Meta Commerce catalog (upsert by product id)."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    product = await ProductService().get_by_id(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    try:
+        result = await FacebookCatalogService().sync_product(product)
+    except FacebookCatalogError as e:
+        status = 503 if "not configured" in str(e) else 502
+        raise HTTPException(status_code=status, detail=str(e))
+    return JSONResponse(content=result)
 
 
 @router.delete("/api/admin/products/{product_id}")

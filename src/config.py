@@ -264,6 +264,12 @@ class Settings(BaseSettings):
     r2_bucket: str = Field(default="chokmoki", env="R2_BUCKET")
     r2_key_prefix: str = Field(default="", env="R2_KEY_PREFIX")
     r2_public_base_url: str = Field(default="", env="R2_PUBLIC_BASE_URL")
+
+    # Meta (Facebook/Instagram) Commerce catalog — powers the admin
+    # "Sync to Facebook" button. Unset -> that endpoint returns 503.
+    fb_catalog_id: str = Field(default="", env="FB_CATALOG_ID")
+    fb_catalog_access_token: str = Field(default="", env="FB_CATALOG_ACCESS_TOKEN")
+    fb_graph_api_version: str = Field(default="v21.0", env="FB_GRAPH_API_VERSION")
     # Optional override for local/sandbox testing against an S3-compatible mock
     # (e.g. MinIO). Unset in production -> R2Service builds the real Cloudflare
     # R2 endpoint from r2_account_id as before.
