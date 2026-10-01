@@ -400,6 +400,28 @@ class ProductService:
                 }},
             )
 
+    async def list_active_ids(self) -> List[str]:
+        collection = await self._collection()
+        cursor = collection.find({"active": True}, {"_id": 1}).sort("created_at", 1)
+        return [str(doc["_id"]) async for doc in cursor]
+
+    async def get_many(self, product_ids: List[str]) -> List[JewelryProduct]:
+        """Products for the given ids, in the given order; missing ones are skipped."""
+        oids = [ObjectId(i) for i in product_ids if ObjectId.is_valid(i)]
+        if not oids:
+            return []
+        collection = await self._collection()
+        by_id = {doc["_id"]: doc async for doc in collection.find({"_id": {"$in": oids}})}
+        return [JewelryProduct(**by_id[o]) for o in oids if o in by_id]
+
+    async def set_facebook_error_many(self, product_ids: List[str], message: str) -> None:
+        oids = [ObjectId(i) for i in product_ids if ObjectId.is_valid(i)]
+        if oids:
+            collection = await self._collection()
+            await collection.update_many(
+                {"_id": {"$in": oids}}, {"$set": {"facebook_sync_error": message[:500]}}
+            )
+
     async def list_active(self) -> List[JewelryProduct]:
         collection = await self._collection()
         return [JewelryProduct(**doc) async for doc in collection.find({"active": True})]

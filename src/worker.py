@@ -106,6 +106,8 @@ async def main() -> None:
     from src.services.inventory_service import InventoryService
     await PaymentReconciliationService().ensure_indexes()
     await InventoryService().ensure_indexes()
+    from src.jobs.job_service import BackgroundJobService
+    await BackgroundJobService().ensure_indexes()
 
     tasks: list[asyncio.Task] = []
     # This consumer drives every customer notification (order-confirmation
@@ -128,6 +130,8 @@ async def main() -> None:
     # Unconditional — core payment processing, not an optional notification.
     tasks.append(asyncio.create_task(OrderEventConsumer().run(), name="order_event_consumer"))
     tasks.append(asyncio.create_task(reconcile_loop(), name="payment_reconcile_loop"))
+    from src.jobs.consumer import JobConsumer
+    tasks.append(asyncio.create_task(JobConsumer().run(), name="job_consumer"))
     tasks.append(asyncio.create_task(heartbeat_loop(), name="heartbeat_loop"))
     if settings.fb_catalog_id and settings.fb_catalog_access_token:
         tasks.append(asyncio.create_task(facebook_catalog_loop(), name="facebook_catalog_loop"))

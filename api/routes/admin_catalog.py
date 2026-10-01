@@ -285,23 +285,6 @@ async def admin_remove_product_from_facebook(
     return {"success": True}
 
 
-@router.post("/api/admin/facebook-catalog/sync-all")
-async def admin_sync_all_to_facebook(email: str = Depends(require_scope_email("products", "write"))):
-    """Push every active product and opt them all in to automatic updates."""
-    if ProductService is None:
-        raise HTTPException(status_code=500, detail="Server not initialized")
-
-    service = ProductService()
-    products = await service.list_active()
-    try:
-        sent = await FacebookCatalogService().sync_products(products)
-    except FacebookCatalogError as e:
-        status = 503 if "not configured" in str(e) else 502
-        raise HTTPException(status_code=status, detail=str(e))
-    await service.mark_facebook_synced([str(p.id) for p in products])
-    return {"synced": sent}
-
-
 @router.post("/api/admin/facebook-catalog/refresh-status")
 async def admin_refresh_facebook_status(email: str = Depends(require_scope_email("products", "read"))):
     """Pull Facebook's approval verdict (approved / pending / rejected) for synced products."""

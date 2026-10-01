@@ -4,19 +4,49 @@ Uses the catalog Batch API (`items_batch`, method UPDATE + allow_upsert) keyed
 on retailer_id = our product id, so re-syncing an edited product updates the
 same catalog item instead of creating a duplicate."""
 import asyncio
-from typing import Any, Dict, List, Optional
+import random
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
 
 from src.config import settings
+from src.resilience.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 
 CATALOG_CURRENCY = "INR"
 GRAPH_TIMEOUT_SECONDS = 20.0
 BATCH_STATUS_POLLS = 4
 
 
+# One breaker shared by the API and worker (state lives in Redis). Only
+# transient failures count toward tripping it — a bad product payload must
+# never take the whole integration offline.
+FACEBOOK_BREAKER = CircuitBreaker(
+    "facebook", failure_threshold=5, failure_window_seconds=60, cooldown_seconds=30
+)
+
+# Graph API error codes Meta documents as temporary / rate-limit related.
+TRANSIENT_GRAPH_CODES = {1, 2, 4, 17, 32, 341, 368, 613, 80004}
+BACKOFF_BASE_SECONDS = 2.0
+BACKOFF_CAP_SECONDS = 60.0
+BACKOFF_JITTER = 0.3
+
+
 class FacebookCatalogError(Exception):
-    pass
+    """`retryable` marks transient failures (rate limit, 5xx, network,
+    breaker open) worth retrying with backoff; everything else (bad token,
+    invalid data) fails fast. `retry_after` is a minimum wait in seconds."""
+
+    def __init__(self, message: str, *, retryable: bool = False, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def backoff_delay(attempt: int) -> float:
+    """Exponential (2s, 4s, 8s ... capped at 60s) plus up to 30% jitter, so
+    many retries never hit Facebook in lockstep."""
+    delay = min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), BACKOFF_CAP_SECONDS)
+    return delay + random.uniform(0, BACKOFF_JITTER * delay)
 
 
 def _in_price(product: Any) -> Dict[str, float]:
@@ -98,11 +128,10 @@ class FacebookCatalogService:
     async def sync_products(self, products: List[Any]) -> int:
         """Bulk resync (worker reconcile). Returns the number of items sent."""
         sent = 0
-        async with httpx.AsyncClient(timeout=GRAPH_TIMEOUT_SECONDS) as client:
-            for i in range(0, len(products), BULK_CHUNK_SIZE):
-                chunk = products[i : i + BULK_CHUNK_SIZE]
-                await self._submit(client, [self._request_for(p) for p in chunk])
-                sent += len(chunk)
+        for i in range(0, len(products), BULK_CHUNK_SIZE):
+            chunk = products[i : i + BULK_CHUNK_SIZE]
+            await self.submit_chunk(chunk)
+            sent += len(chunk)
         return sent
 
     async def delete_product(self, product_id: str) -> None:
@@ -134,19 +163,73 @@ class FacebookCatalogService:
                 params = None  # the `next` URL already carries every parameter
         return out
 
-    async def _submit(self, client: httpx.AsyncClient, requests: List[Dict[str, Any]]) -> str:
-        resp = await client.post(
-            f"{self._base}/{self._catalog_id}/items_batch",
-            data={
-                "access_token": self._token,
-                "item_type": "PRODUCT_ITEM",
-                "allow_upsert": "true",
-                "requests": _json(requests),
-            },
+    async def submit_chunk(
+        self,
+        products: List[Any],
+        *,
+        on_retry: Optional[Callable[[int, float, "FacebookCatalogError"], Awaitable[None]]] = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> str:
+        """Submit one batch, retrying transient failures with exponential
+        backoff. `on_retry(attempt, delay, error)` runs before each wait;
+        `sleep` is injectable so a job can heartbeat while it waits."""
+        return await self.submit_with_retry(
+            [self._request_for(p) for p in products], on_retry=on_retry, sleep=sleep
         )
+
+    async def submit_with_retry(
+        self,
+        requests: List[Dict[str, Any]],
+        *,
+        on_retry: Optional[Callable[[int, float, "FacebookCatalogError"], Awaitable[None]]] = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> str:
+        max_attempts = max(1, settings.fb_sync_max_attempts)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                async with httpx.AsyncClient(timeout=GRAPH_TIMEOUT_SECONDS) as client:
+                    return await self._submit(client, requests)
+            except FacebookCatalogError as e:
+                if not e.retryable or attempt >= max_attempts:
+                    raise
+                delay = max(e.retry_after or 0.0, backoff_delay(attempt))
+                if on_retry is not None:
+                    await on_retry(attempt, delay, e)
+                await sleep(delay)
+
+    async def _submit(self, client: httpx.AsyncClient, requests: List[Dict[str, Any]]) -> str:
+        async def _call() -> httpx.Response:
+            resp = await client.post(
+                f"{self._base}/{self._catalog_id}/items_batch",
+                data={
+                    "access_token": self._token,
+                    "item_type": "PRODUCT_ITEM",
+                    "allow_upsert": "true",
+                    "requests": _json(requests),
+                },
+            )
+            body = _safe_json(resp)
+            if resp.status_code >= 400 or "error" in body:
+                failure = _graph_failure(body, resp.status_code)
+                if failure.retryable:
+                    raise failure  # counts toward the breaker
+            return resp
+
+        try:
+            resp = await FACEBOOK_BREAKER.call(_call)
+        except CircuitBreakerOpenError:
+            raise FacebookCatalogError(
+                "Facebook calls are paused after repeated failures", retryable=True, retry_after=30.0
+            )
+        except httpx.HTTPError as e:
+            raise FacebookCatalogError(
+                f"Could not reach Facebook ({type(e).__name__})", retryable=True
+            )
         body = _safe_json(resp)
         if resp.status_code >= 400 or "error" in body:
-            raise FacebookCatalogError(_graph_error(body, resp.status_code))
+            raise _graph_failure(body, resp.status_code)
         handles: List[str] = body.get("handles") or []
         if not handles:
             raise FacebookCatalogError("Facebook accepted the request but returned no batch handle")
@@ -184,6 +267,17 @@ def _safe_json(resp: httpx.Response) -> Dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except ValueError:
         return {}
+
+
+def _graph_failure(body: Dict[str, Any], status_code: int) -> FacebookCatalogError:
+    err = body.get("error") or {}
+    retryable = (
+        status_code >= 500
+        or status_code == 429
+        or err.get("is_transient") is True
+        or err.get("code") in TRANSIENT_GRAPH_CODES
+    )
+    return FacebookCatalogError(_graph_error(body, status_code), retryable=retryable)
 
 
 def _graph_error(body: Dict[str, Any], status_code: int) -> str:

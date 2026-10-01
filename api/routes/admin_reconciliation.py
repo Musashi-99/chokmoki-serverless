@@ -22,7 +22,7 @@ router = APIRouter()
 # authoritative state lives in Redis under breaker:{name}:* — reading it here
 # is cross-process truth (backend + worker), unlike the per-process Prometheus
 # gauge which only reflects what one process last observed.
-BREAKER_NAMES = ("razorpay", "shiprocket", "telegram")
+BREAKER_NAMES = ("razorpay", "shiprocket", "telegram", "facebook")
 
 
 @router.get("/api/admin/payment-reconciliation/runs")
@@ -127,6 +127,7 @@ async def admin_observability(email: str = Depends(require_scope_email("audit", 
     streams = {
         "orders": await stream_stats("chokmoki:orders:events", "orders"),
         "alerts": await stream_stats("chokmoki:alerts:stream", "alerts"),
+        "jobs": await stream_stats("chokmoki:jobs:stream", "jobs"),
     }
 
     return JSONResponse(content=_json_response_content({

@@ -161,6 +161,7 @@ from api.routes import (
     admin_auth,
     admin_backup,
     admin_catalog,
+    admin_jobs,
     admin_content,
     admin_coupons,
     admin_fraud,
@@ -208,6 +209,7 @@ app.include_router(admin_abandoned_carts.router)
 app.include_router(admin_preorders.router)
 app.include_router(preorders.router)
 app.include_router(admin_catalog.router)
+app.include_router(admin_jobs.router)
 app.include_router(admin_coupons.router)
 app.include_router(admin_content.router)
 app.include_router(admin_inbox.router)

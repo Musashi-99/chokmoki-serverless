@@ -272,6 +272,8 @@ class Settings(BaseSettings):
     fb_graph_api_version: str = Field(default="v21.0", env="FB_GRAPH_API_VERSION")
     # Worker resync of every opted-in product — catches stock changes from
     # orders, imports and anything else that bypasses the admin edit hook.
+    fb_sync_chunk_size: int = Field(default=100, env="FB_SYNC_CHUNK_SIZE")
+    fb_sync_max_attempts: int = Field(default=6, env="FB_SYNC_MAX_ATTEMPTS")
     fb_catalog_reconcile_interval_seconds: int = Field(
         default=1800, env="FB_CATALOG_RECONCILE_INTERVAL_SECONDS"
     )
