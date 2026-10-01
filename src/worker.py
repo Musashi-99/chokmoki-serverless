@@ -66,7 +66,7 @@ async def facebook_catalog_loop() -> None:
     price/stock/availability there never drifts from the site (an order
     decrementing stock never passes through the admin edit hook). A failed
     run is logged and retried next interval — it must never kill the loop."""
-    from src.services.facebook_catalog_service import FacebookCatalogService
+    from src.services.facebook_catalog_service import FacebookCatalogService, refresh_review_statuses
     from src.services.product_service import ProductService
 
     interval = settings.fb_catalog_reconcile_interval_seconds
@@ -78,6 +78,8 @@ async def facebook_catalog_loop() -> None:
                 sent = await FacebookCatalogService().sync_products(products)
                 if logger:
                     logger.info(f"Facebook catalog reconcile: resynced {sent} product(s)")
+                await ProductService().mark_facebook_synced([str(p.id) for p in products if p.active])
+                await refresh_review_statuses(ProductService())
         except Exception as e:
             if logger:
                 logger.error(f"Facebook catalog reconcile failed: {e}")

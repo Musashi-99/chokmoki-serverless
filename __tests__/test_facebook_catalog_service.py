@@ -68,3 +68,22 @@ def test_active_product_is_upserted():
     req = FacebookCatalogService._request_for(_product())
     assert req["method"] == "UPDATE"
     assert req["data"]["title"] == "Golden Wing Bee pendants"
+
+
+def test_product_service_rejects_non_facebook_state_writes():
+    import asyncio
+    import pytest
+    from src.services.product_service import ProductService
+
+    with pytest.raises(ValueError):
+        asyncio.run(ProductService().set_facebook_state("x", name="hacked"))
+
+
+def test_facebook_filter_clauses():
+    from src.services.product_service import ProductService
+
+    svc = ProductService()
+    assert svc._list_query(facebook="synced") == {"facebook_synced_at": {"$ne": None}}
+    assert svc._list_query(facebook="not_synced") == {"facebook_synced_at": None}
+    assert "$or" in svc._list_query(facebook="problems")
+    assert svc._list_query(facebook="bogus") == {}

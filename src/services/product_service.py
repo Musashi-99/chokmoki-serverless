@@ -173,6 +173,7 @@ class ProductService:
         sort: Optional[str] = None,
         search: Optional[str] = None,
         ids: Optional[List[str]] = None,
+        facebook: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
@@ -184,6 +185,7 @@ class ProductService:
             is_curated=is_curated,
             search=search,
             ids=ids,
+            facebook=facebook,
         )
         cursor = collection.find(query)
         
@@ -211,6 +213,7 @@ class ProductService:
         is_curated: Optional[bool] = None,
         search: Optional[str] = None,
         ids: Optional[List[str]] = None,
+        facebook: Optional[str] = None,
     ) -> Dict[str, Any]:
         query: Dict[str, Any] = {}
         if active is not None:
@@ -232,7 +235,15 @@ class ProductService:
                     {"slug": {"$regex": safe, "$options": "i"}},
                 ]
             }
-        return merge_mongo_filters(query or None, search_clause, ids_mongo_filter(ids))
+        facebook_clause = {
+            "synced": {"facebook_synced_at": {"$ne": None}},
+            "not_synced": {"facebook_synced_at": None},
+            "problems": {"$or": [
+                {"facebook_sync_error": {"$nin": [None, ""]}},
+                {"facebook_review_status": "rejected"},
+            ]},
+        }.get(facebook or "")
+        return merge_mongo_filters(query or None, search_clause, ids_mongo_filter(ids), facebook_clause)
     
     async def count(
         self,
@@ -242,6 +253,7 @@ class ProductService:
         is_curated: Optional[bool] = None,
         search: Optional[str] = None,
         ids: Optional[List[str]] = None,
+        facebook: Optional[str] = None,
     ) -> int:
         database = await db.get_database()
         collection = database[self.COLLECTION_NAME]
@@ -252,6 +264,7 @@ class ProductService:
             is_curated=is_curated,
             search=search,
             ids=ids,
+            facebook=facebook,
         )
         return await collection.count_documents(query)
     
@@ -354,14 +367,42 @@ class ProductService:
 
         return updated
     
-    async def set_facebook_synced(self, product_id: str, synced: bool) -> None:
+    async def set_facebook_state(self, product_id: str, **fields: Any) -> None:
+        """Write facebook_* bookkeeping fields only (never product content)."""
+        if not fields or any(not k.startswith("facebook_") for k in fields):
+            raise ValueError("set_facebook_state only writes facebook_* fields")
         collection = await self._collection()
         filt = await self._resolve_filter(product_id)
-        if not filt:
-            return
-        await collection.update_one(
-            filt, {"$set": {"facebook_synced_at": datetime.utcnow() if synced else None}}
-        )
+        if filt:
+            await collection.update_one(filt, {"$set": fields})
+
+    async def mark_facebook_synced(self, product_ids: List[str]) -> None:
+        collection = await self._collection()
+        oids = [ObjectId(i) for i in product_ids if ObjectId.is_valid(i)]
+        if oids:
+            await collection.update_many(
+                {"_id": {"$in": oids}},
+                {"$set": {"facebook_synced_at": datetime.utcnow(), "facebook_sync_error": None}},
+            )
+
+    async def apply_facebook_review(self, review: Dict[str, Dict[str, Any]]) -> None:
+        """review: {product_id: {"status": str, "reasons": [str]}} — only for
+        products still opted in, so a removed product isn't resurrected."""
+        collection = await self._collection()
+        for product_id, info in review.items():
+            if not ObjectId.is_valid(product_id):
+                continue
+            await collection.update_one(
+                {"_id": ObjectId(product_id), "facebook_synced_at": {"$ne": None}},
+                {"$set": {
+                    "facebook_review_status": info.get("status"),
+                    "facebook_review_reasons": info.get("reasons") or [],
+                }},
+            )
+
+    async def list_active(self) -> List[JewelryProduct]:
+        collection = await self._collection()
+        return [JewelryProduct(**doc) async for doc in collection.find({"active": True})]
 
     async def list_facebook_synced(self) -> List[JewelryProduct]:
         collection = await self._collection()

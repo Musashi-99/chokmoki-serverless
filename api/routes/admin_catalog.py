@@ -8,21 +8,29 @@ from api.bootstrap import AdminPrincipal, CategoryService, JewelryCategoryCreate
 from api.json_utils import JSONEncoder
 from src.models.region import normalize_region_codes
 from src.security.abac import is_allowed
-from src.services.facebook_catalog_service import FacebookCatalogError, FacebookCatalogService, is_configured as facebook_configured
+from src.services.facebook_catalog_service import FacebookCatalogError, FacebookCatalogService, is_configured as facebook_configured, refresh_review_statuses
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 async def _push_product_to_facebook(product_id: str) -> None:
-    """Background: re-push an already-synced product after an admin edit.
-    Never raises — a Facebook outage must not affect saving a product."""
+    """Background: re-push an already-synced product after an admin edit and
+    record the outcome on it. Never raises — a Facebook outage must not
+    affect saving a product."""
+    service = ProductService()
     try:
-        product = await ProductService().get_by_id(product_id)
-        if product and product.facebook_synced_at and facebook_configured():
-            await FacebookCatalogService().sync_products([product])
+        product = await service.get_by_id(product_id)
+        if not (product and product.facebook_synced_at and facebook_configured()):
+            return
+        await FacebookCatalogService().sync_products([product])
+        await service.mark_facebook_synced([str(product.id)])
     except Exception as e:
         logger.error(f"Facebook catalog auto-sync failed for product {product_id}: {e}")
+        try:
+            await service.set_facebook_state(product_id, facebook_sync_error=str(e)[:500])
+        except Exception:
+            pass
 
 
 async def _remove_product_from_facebook(product_id: str) -> None:
@@ -104,9 +112,11 @@ async def admin_list_products(
     active: Optional[bool] = None,
     is_best_seller: Optional[bool] = None,
     is_curated: Optional[bool] = None,
+    facebook: Optional[str] = None,
     email: str = Depends(require_scope_email("products", "read")),
 ):
-    """List every product (including inactive) for the admin dashboard."""
+    """List every product (including inactive) for the admin dashboard.
+    `facebook`: synced | not_synced | problems."""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
@@ -114,9 +124,11 @@ async def admin_list_products(
     products = await service.list(
         skip=skip, limit=limit, active=active,
         category=category, is_best_seller=is_best_seller, is_curated=is_curated, search=search,
+        facebook=facebook,
     )
     total = await service.count(
-        active=active, category=category, is_best_seller=is_best_seller, is_curated=is_curated, search=search
+        active=active, category=category, is_best_seller=is_best_seller, is_curated=is_curated, search=search,
+        facebook=facebook,
     )
     return JSONResponse(content=json.loads(json.dumps({
         "data": products,
@@ -218,21 +230,89 @@ async def admin_update_product(
 async def admin_sync_product_to_facebook(
     product_id: str, email: str = Depends(require_scope_email("products", "write"))
 ):
-    """Push one product into the Meta Commerce catalog (upsert by product id)."""
+    """Push one product into the Meta Commerce catalog (upsert by product id)
+    and opt it in to automatic updates."""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
 
-    product = await ProductService().get_by_id(product_id)
+    service = ProductService()
+    product = await service.get_by_id(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
     try:
         result = await FacebookCatalogService().sync_product(product)
-        await ProductService().set_facebook_synced(product_id, True)
+    except FacebookCatalogError as e:
+        await service.set_facebook_state(product_id, facebook_sync_error=str(e)[:500])
+        status = 503 if "not configured" in str(e) else 502
+        raise HTTPException(status_code=status, detail=str(e))
+
+    problems = [e.get("message") for e in (result.get("errors") or []) if e.get("message")]
+    if problems:
+        await service.set_facebook_state(product_id, facebook_sync_error="; ".join(problems)[:500])
+    else:
+        await service.mark_facebook_synced([str(product.id)])
+        await service.set_facebook_state(
+            product_id, facebook_review_status=None, facebook_review_reasons=[]
+        )
+    return JSONResponse(content=result)
+
+
+@router.delete("/api/admin/products/{product_id}/facebook-sync")
+async def admin_remove_product_from_facebook(
+    product_id: str, email: str = Depends(require_scope_email("products", "write"))
+):
+    """Remove a product from the Meta catalog and stop auto-syncing it."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = ProductService()
+    product = await service.get_by_id(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    try:
+        await FacebookCatalogService().delete_product(str(product.id))
     except FacebookCatalogError as e:
         status = 503 if "not configured" in str(e) else 502
         raise HTTPException(status_code=status, detail=str(e))
-    return JSONResponse(content=result)
+    await service.set_facebook_state(
+        product_id,
+        facebook_synced_at=None,
+        facebook_sync_error=None,
+        facebook_review_status=None,
+        facebook_review_reasons=[],
+    )
+    return {"success": True}
+
+
+@router.post("/api/admin/facebook-catalog/sync-all")
+async def admin_sync_all_to_facebook(email: str = Depends(require_scope_email("products", "write"))):
+    """Push every active product and opt them all in to automatic updates."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+
+    service = ProductService()
+    products = await service.list_active()
+    try:
+        sent = await FacebookCatalogService().sync_products(products)
+    except FacebookCatalogError as e:
+        status = 503 if "not configured" in str(e) else 502
+        raise HTTPException(status_code=status, detail=str(e))
+    await service.mark_facebook_synced([str(p.id) for p in products])
+    return {"synced": sent}
+
+
+@router.post("/api/admin/facebook-catalog/refresh-status")
+async def admin_refresh_facebook_status(email: str = Depends(require_scope_email("products", "read"))):
+    """Pull Facebook's approval verdict (approved / pending / rejected) for synced products."""
+    if ProductService is None:
+        raise HTTPException(status_code=500, detail="Server not initialized")
+    try:
+        checked = await refresh_review_statuses(ProductService())
+    except FacebookCatalogError as e:
+        status = 503 if "not configured" in str(e) else 502
+        raise HTTPException(status_code=status, detail=str(e))
+    return {"checked": checked}
 
 
 @router.delete("/api/admin/products/{product_id}")

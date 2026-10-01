@@ -167,6 +167,11 @@ class JewelryProduct(BaseModel):
     # presence is the opt-in that keeps the product auto-synced afterwards.
     # Deliberately not on JewelryProductCreate/Update, so edits can't clobber it.
     facebook_synced_at: Optional[datetime] = None
+    # Last failed push (cleared on the next success) and Facebook's own
+    # review verdict (approved / pending / rejected) pulled by the worker.
+    facebook_sync_error: Optional[str] = None
+    facebook_review_status: Optional[str] = None
+    facebook_review_reasons: List[str] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
     # Backward-compatible fields for order system
     selling_price: float = 0

@@ -109,6 +109,31 @@ class FacebookCatalogService:
         async with httpx.AsyncClient(timeout=GRAPH_TIMEOUT_SECONDS) as client:
             await self._submit(client, [{"method": "DELETE", "data": {"id": str(product_id)}}])
 
+    async def fetch_review_statuses(self) -> Dict[str, Dict[str, Any]]:
+        """{retailer_id: {"status", "reasons"}} for every item in the catalog."""
+        out: Dict[str, Dict[str, Any]] = {}
+        url: Optional[str] = f"{self._base}/{self._catalog_id}/products"
+        params: Optional[Dict[str, Any]] = {
+            "access_token": self._token,
+            "fields": "retailer_id,review_status,review_rejection_reasons",
+            "limit": 200,
+        }
+        async with httpx.AsyncClient(timeout=GRAPH_TIMEOUT_SECONDS) as client:
+            while url:
+                resp = await client.get(url, params=params)
+                body = _safe_json(resp)
+                if resp.status_code >= 400 or "error" in body:
+                    raise FacebookCatalogError(_graph_error(body, resp.status_code))
+                for row in body.get("data") or []:
+                    if row.get("retailer_id"):
+                        out[row["retailer_id"]] = {
+                            "status": row.get("review_status") or None,
+                            "reasons": [str(r) for r in (row.get("review_rejection_reasons") or [])],
+                        }
+                url = (body.get("paging") or {}).get("next")
+                params = None  # the `next` URL already carries every parameter
+        return out
+
     async def _submit(self, client: httpx.AsyncClient, requests: List[Dict[str, Any]]) -> str:
         resp = await client.post(
             f"{self._base}/{self._catalog_id}/items_batch",
@@ -164,3 +189,10 @@ def _safe_json(resp: httpx.Response) -> Dict[str, Any]:
 def _graph_error(body: Dict[str, Any], status_code: int) -> str:
     err = body.get("error") or {}
     return err.get("error_user_msg") or err.get("message") or f"Facebook API error (HTTP {status_code})"
+
+
+async def refresh_review_statuses(product_service: Any) -> int:
+    """Pull Facebook's approval verdicts into the opted-in products."""
+    review = await FacebookCatalogService().fetch_review_statuses()
+    await product_service.apply_facebook_review(review)
+    return len(review)
