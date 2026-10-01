@@ -61,6 +61,28 @@ async def reconcile_loop() -> None:
                 logger.error(f"Payment reconcile loop failed: {e}")
 
 
+async def facebook_catalog_loop() -> None:
+    """Resync every product an admin has opted into the Meta catalog, so
+    price/stock/availability there never drifts from the site (an order
+    decrementing stock never passes through the admin edit hook). A failed
+    run is logged and retried next interval — it must never kill the loop."""
+    from src.services.facebook_catalog_service import FacebookCatalogService
+    from src.services.product_service import ProductService
+
+    interval = settings.fb_catalog_reconcile_interval_seconds
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            products = await ProductService().list_facebook_synced()
+            if products:
+                sent = await FacebookCatalogService().sync_products(products)
+                if logger:
+                    logger.info(f"Facebook catalog reconcile: resynced {sent} product(s)")
+        except Exception as e:
+            if logger:
+                logger.error(f"Facebook catalog reconcile failed: {e}")
+
+
 async def heartbeat_loop() -> None:
     """Proves the worker's event loop is alive and scheduling tasks, not just
     that the process exists — a wedged event loop (e.g. something blocking
@@ -105,6 +127,8 @@ async def main() -> None:
     tasks.append(asyncio.create_task(OrderEventConsumer().run(), name="order_event_consumer"))
     tasks.append(asyncio.create_task(reconcile_loop(), name="payment_reconcile_loop"))
     tasks.append(asyncio.create_task(heartbeat_loop(), name="heartbeat_loop"))
+    if settings.fb_catalog_id and settings.fb_catalog_access_token:
+        tasks.append(asyncio.create_task(facebook_catalog_loop(), name="facebook_catalog_loop"))
 
     if logger:
         logger.info(f"Worker started with {len(tasks)} consumer task(s)")

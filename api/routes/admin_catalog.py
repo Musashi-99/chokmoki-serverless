@@ -1,5 +1,6 @@
 """Admin product + category CRUD."""
-from fastapi import APIRouter, HTTPException, Depends
+import logging
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from typing import Any, Dict, List, Optional
 import json
@@ -7,9 +8,29 @@ from api.bootstrap import AdminPrincipal, CategoryService, JewelryCategoryCreate
 from api.json_utils import JSONEncoder
 from src.models.region import normalize_region_codes
 from src.security.abac import is_allowed
-from src.services.facebook_catalog_service import FacebookCatalogError, FacebookCatalogService
+from src.services.facebook_catalog_service import FacebookCatalogError, FacebookCatalogService, is_configured as facebook_configured
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+async def _push_product_to_facebook(product_id: str) -> None:
+    """Background: re-push an already-synced product after an admin edit.
+    Never raises — a Facebook outage must not affect saving a product."""
+    try:
+        product = await ProductService().get_by_id(product_id)
+        if product and product.facebook_synced_at and facebook_configured():
+            await FacebookCatalogService().sync_products([product])
+    except Exception as e:
+        logger.error(f"Facebook catalog auto-sync failed for product {product_id}: {e}")
+
+
+async def _remove_product_from_facebook(product_id: str) -> None:
+    try:
+        if facebook_configured():
+            await FacebookCatalogService().delete_product(product_id)
+    except Exception as e:
+        logger.error(f"Facebook catalog removal failed for product {product_id}: {e}")
 
 # `price_inr` is always in the allow-list alongside `prices` even though
 # it's not something a price-only admin should independently control: it's
@@ -150,6 +171,7 @@ async def admin_get_product(product_id: str, email: str = Depends(require_scope_
 async def admin_update_product(
     product_id: str,
     payload: Dict[str, Any],
+    background_tasks: BackgroundTasks,
     principal: AdminPrincipal = Depends(require_any_scope(("products", "write"), ("products", "price_write"))),
 ):
     """Update a product by its MongoDB id. Admins with only products:price_write
@@ -184,6 +206,9 @@ async def admin_update_product(
         await cache.delete_pattern("chokmoki:products:*")
         await cache.delete_pattern("chokmoki:product:*")
 
+    if updated.facebook_synced_at:
+        background_tasks.add_task(_push_product_to_facebook, product_id)
+
     return JSONResponse(content=json.loads(json.dumps(
         updated.model_dump(by_alias=True), cls=JSONEncoder
     )))
@@ -203,6 +228,7 @@ async def admin_sync_product_to_facebook(
 
     try:
         result = await FacebookCatalogService().sync_product(product)
+        await ProductService().set_facebook_synced(product_id, True)
     except FacebookCatalogError as e:
         status = 503 if "not configured" in str(e) else 502
         raise HTTPException(status_code=status, detail=str(e))
@@ -210,7 +236,11 @@ async def admin_sync_product_to_facebook(
 
 
 @router.delete("/api/admin/products/{product_id}")
-async def admin_delete_product(product_id: str, email: str = Depends(require_scope_email("products", "write"))):
+async def admin_delete_product(
+    product_id: str,
+    background_tasks: BackgroundTasks,
+    email: str = Depends(require_scope_email("products", "write")),
+):
     """Delete a product by its MongoDB id."""
     if ProductService is None:
         raise HTTPException(status_code=500, detail="Server not initialized")
@@ -229,6 +259,9 @@ async def admin_delete_product(product_id: str, email: str = Depends(require_sco
             await cache.delete(f"chokmoki:product:{existing.slug}")
         await cache.delete_pattern("chokmoki:products:*")
         await cache.delete_pattern("chokmoki:product:*")
+
+    if existing and existing.facebook_synced_at:
+        background_tasks.add_task(_remove_product_from_facebook, str(existing.id))
 
     return {"success": True}
 

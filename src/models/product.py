@@ -163,6 +163,10 @@ class JewelryProduct(BaseModel):
     purity: str = "92.5% Sterling Silver"
     stock: List[MarketStock] = Field(default_factory=list)
     active: bool = True
+    # Set when an admin first syncs this product to the Meta catalog; its
+    # presence is the opt-in that keeps the product auto-synced afterwards.
+    # Deliberately not on JewelryProductCreate/Update, so edits can't clobber it.
+    facebook_synced_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     # Backward-compatible fields for order system
     selling_price: float = 0

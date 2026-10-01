@@ -354,6 +354,20 @@ class ProductService:
 
         return updated
     
+    async def set_facebook_synced(self, product_id: str, synced: bool) -> None:
+        collection = await self._collection()
+        filt = await self._resolve_filter(product_id)
+        if not filt:
+            return
+        await collection.update_one(
+            filt, {"$set": {"facebook_synced_at": datetime.utcnow() if synced else None}}
+        )
+
+    async def list_facebook_synced(self) -> List[JewelryProduct]:
+        collection = await self._collection()
+        cursor = collection.find({"facebook_synced_at": {"$ne": None}})
+        return [JewelryProduct(**doc) async for doc in cursor]
+
     async def delete(self, product_id: str) -> bool:
         product_filter = await self._resolve_filter(product_id)
         if not product_filter:
