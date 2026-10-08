@@ -6,6 +6,7 @@ import asyncio
 import uuid
 import json
 import razorpay.errors
+from src.tracking.meta_capi import schedule_purchase
 from src.database.connection import db
 from src.database.redis_connection import redis_client
 from src.models.order import Order, OrderCreateInput, ValidatedOrderItem, OrderStatus, ShippingAddressInOrder, RegionAudit
@@ -244,6 +245,9 @@ class OrderService:
             email=(claimed.get("user_email") or "").strip().lower(),
             payload={"items": claimed.get("items") or []},
         )
+        # Payment confirmed — send the server-side Purchase once (this block
+        # is claimed atomically, and the CAPI module has its own Redis guard).
+        schedule_purchase(claimed)
         await PaymentReconciliationService().mark_resolved(order_id=order_id, source=resolution_source)
         await orders_collection.update_one(
             {"order_id": order_id}, {"$set": {"post_processing_status": "done"}}
@@ -622,6 +626,11 @@ class OrderService:
             "created_at": datetime.utcnow(),
             "raw_order_log": raw_order_log,
             "region_audit": region_audit.model_dump(),
+            "tracking": {
+                "fbp": order_data.fbp,
+                "fbc": order_data.fbc,
+                "event_source_url": order_data.eventSourceUrl,
+            },
         }
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()
@@ -651,6 +660,9 @@ class OrderService:
             order_id, "order_created", "customer",
             {"payment_method": order_dict["payment_method"], "total_amount": order_dict["total_amount"]},
         )
+        # COD is confirmed at creation (no payment step). Fire-and-forget:
+        # a slow/failing Meta call must never delay or fail an order.
+        schedule_purchase(order_dict)
         # Only mark this exact cart (email+items) as "genuinely purchased"
         # now that it actually succeeded — see enrichment.py's
         # _duplicate_order_flag for why this must not happen on every attempt.
@@ -1475,6 +1487,11 @@ class OrderService:
             "created_at": datetime.utcnow().isoformat(),
             "raw_order_log": raw_order_log,
             "region_audit": region_audit.model_dump(mode="json"),
+            "tracking": {
+                "fbp": order_data.fbp,
+                "fbc": order_data.fbc,
+                "event_source_url": order_data.eventSourceUrl,
+            },
         }
         if applied is not None:
             order_dict["applied_discount"] = applied.model_dump()

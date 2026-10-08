@@ -60,6 +60,13 @@ class OrderCreateInput(BaseModel):
     # customer auth cookie, if present) — never trust a client-supplied
     # value here, or anyone could claim someone else's account on an order.
     user_id: Optional[str] = None
+    # Meta ad-attribution signals from the browser (the _fbp/_fbc cookies and
+    # the page the order was placed from) — stored on the order so the
+    # server-side Purchase can carry them, even when it is sent later from a
+    # payment webhook that has no browser context.
+    fbp: Optional[str] = Field(default=None, max_length=256)
+    fbc: Optional[str] = Field(default=None, max_length=256)
+    eventSourceUrl: Optional[str] = Field(default=None, max_length=512)
 
 
 class ValidatedOrderItem(BaseModel):

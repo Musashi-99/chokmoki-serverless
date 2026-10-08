@@ -28,6 +28,14 @@ from src.services.facebook_catalog_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _facebook_configured():
+    # Settings may already be loaded by another test module, so don't rely on
+    # the env vars set at import time above.
+    with patch.object(settings, "fb_catalog_id", "123"), patch.object(settings, "fb_catalog_access_token", "token"):
+        yield
+
+
 # ---------------------------------------------------------------- backoff
 def test_backoff_is_exponential_capped_and_jittered():
     for attempt, base in [(1, 2), (2, 4), (3, 8), (4, 16), (5, 32), (6, 60), (9, 60)]:
