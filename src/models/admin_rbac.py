@@ -13,6 +13,8 @@ class AdminPermission(str, Enum):
     ORDERS_WRITE = "orders:write"
     PREORDERS_READ = "preorders:read"
     PREORDERS_WRITE = "preorders:write"
+    ENQUIRIES_READ = "enquiries:read"
+    ENQUIRIES_WRITE = "enquiries:write"
     PRODUCTS_READ = "products:read"
     PRODUCTS_WRITE = "products:write"
     PRODUCTS_PRICE_WRITE = "products:price_write"
@@ -40,6 +42,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         AdminPermission.ORDERS_WRITE.value,
         AdminPermission.PREORDERS_READ.value,
         AdminPermission.PREORDERS_WRITE.value,
+        AdminPermission.ENQUIRIES_READ.value,
+        AdminPermission.ENQUIRIES_WRITE.value,
         AdminPermission.PRODUCTS_READ.value,
         AdminPermission.PRODUCTS_WRITE.value,
         AdminPermission.COUPONS_READ.value,

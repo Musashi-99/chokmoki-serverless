@@ -91,6 +91,13 @@ async def lifespan(app: FastAPI):
             except Exception as idx_err:
                 if logger:
                     logger.warning(f"Preorder index setup skipped: {idx_err}")
+            try:
+                from src.services.enquiry_service import EnquiryService
+
+                await EnquiryService().ensure_indexes()
+            except Exception as idx_err:
+                if logger:
+                    logger.warning(f"Enquiry index setup skipped: {idx_err}")
         if redis_client:
             await redis_client.connect()
         # Ensure the R2 media bucket exists for dynamic asset hosting
@@ -169,6 +176,7 @@ from api.routes import (
     admin_inbox,
     admin_orders,
     admin_orders_backup,
+    admin_enquiries,
     admin_preorders,
     admin_reconciliation,
     admin_sms,
@@ -185,6 +193,7 @@ from api.routes import (
     media,
     orders,
     pincode,
+    enquiries,
     preorders,
     storefront,
 )
@@ -206,7 +215,9 @@ app.include_router(admin_backup.router)
 app.include_router(admin_orders_backup.router)
 app.include_router(admin_orders.router)
 app.include_router(admin_abandoned_carts.router)
+app.include_router(admin_enquiries.router)
 app.include_router(admin_preorders.router)
+app.include_router(enquiries.router)
 app.include_router(preorders.router)
 app.include_router(admin_catalog.router)
 app.include_router(admin_jobs.router)

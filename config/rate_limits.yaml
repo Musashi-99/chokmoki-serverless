@@ -43,6 +43,25 @@ rules:
   # two-bucket shape as `orders` — a legitimate resubmission (typo fix,
   # quantity change) is an upsert, not a new row, so this can afford to be
   # about as generous as checkout itself.
+  # Public enquiry page. Opened on one shop laptop, so many different people
+  # legitimately share ONE IP (a queue at a stall) — the IP bucket is far more
+  # generous than pre-orders'. The per-email bucket still stops one address
+  # being spammed, and the honeypot field drops most bots before storage.
+  - id: enquiries
+    match:
+      methods: [POST]
+      paths: [/api/enquiries]
+    buckets:
+      - scope: ip
+        rate: 200
+        window: 1h
+        burst: 40
+      - scope: email
+        field: email
+        rate: 10
+        window: 1h
+        burst: 5
+
   - id: preorders
     match:
       methods: [POST]
